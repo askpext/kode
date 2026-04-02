@@ -1,0 +1,47 @@
+{
+  "name": "kode-ai",
+  "version": "1.0.0",
+  "description": "Kode - AI coding agent for the terminal powered by Sarvam AI",
+  "type": "module",
+  "bin": {
+    "kode": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsup --watch & node dist/cli.js",
+    "build": "tsup src/cli.tsx --format esm --dts"
+  },
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "sarvam",
+    "cli",
+    "developer-tools"
+  ],
+  "author": "Kode Contributors",
+  "license": "MIT",
+  "dependencies": {
+    "@inkjs/ui": "^2.0.0",
+    "cli-highlight": "^2.1.11",
+    "cosmiconfig": "^9.0.0",
+    "diff": "^7.0.0",
+    "execa": "^9.5.2",
+    "glob": "^13.0.6",
+    "ink": "^5.1.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.1",
+    "sql.js": "^1.12.0",
+    "uuid": "^11.0.5"
+  },
+  "devDependencies": {
+    "@types/diff": "^6.0.0",
+    "@types/node": "^25.5.0",
+    "@types/react": "^18.3.18",
+    "@types/uuid": "^10.0.0",
+    "tsup": "^8.3.6",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

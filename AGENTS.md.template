@@ -1,0 +1,27 @@
+# Project Guidelines
+
+This file contains guidelines for the AI coding agent (Kode) working on this project.
+
+## Project Structure
+
+<!-- Describe your project structure here -->
+
+## Coding Conventions
+
+<!-- Add your coding conventions here -->
+
+## Architecture
+
+<!-- Document key architecture decisions -->
+
+## Testing
+
+<!-- Describe testing requirements -->
+
+## API Keys & Secrets
+
+<!-- Document how to handle secrets -->
+
+## Deployment
+
+<!-- Describe deployment process if applicable -->

@@ -1,0 +1,16 @@
+{
+  "provider": {
+    "apiKey": "",
+    "baseUrl": "https://api.sarvam.ai/v1",
+    "model": "sarvam-m"
+  },
+  "permission": {
+    "bash": "ask",
+    "write": "ask",
+    "edit": "ask"
+  },
+  "context": {
+    "maxTokens": 28000,
+    "compressAt": 0.80
+  }
+}
