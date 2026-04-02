@@ -2,7 +2,8 @@
 import React from 'react';
 import { render } from 'ink';
 import { App } from './ui/App.js';
-import { loadConfig } from './config.js';
+import { Onboarding } from './ui/Onboarding.js';
+import { loadConfig, saveGlobalApiKey } from './config.js';
 import SessionDB from './db/sessions.js';
 import { Agent } from './agent/loop.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -75,37 +76,7 @@ function showVersion() {
   console.log('kode v1.0.0');
 }
 
-async function main() {
-  const args = parseArgs();
-
-  if (args.help) {
-    showHelp();
-    process.exit(0);
-  }
-
-  if (args.version) {
-    showVersion();
-    process.exit(0);
-  }
-
-  // Load configuration
-  const config = await loadConfig();
-
-  // Check for API key
-  if (!config.provider.apiKey) {
-    console.error(`
-Error: No API key found.
-
-Please set your Sarvam API key:
-  export SARVAM_API_KEY=your-api-key
-
-Or add it to your kode.json config file.
-
-Get your API key at: https://sarvam.ai
-`);
-    process.exit(1);
-  }
-
+async function launchApp(apiKey: string, baseUrl: string, model: string, args: CliArgs) {
   // Initialize database
   const db = new SessionDB();
   await db.ensureInit();
@@ -133,9 +104,9 @@ Get your API key at: https://sarvam.ai
     sessionId,
     cwd: cwd(),
     db,
-    apiKey: config.provider.apiKey,
-    baseUrl: config.provider.baseUrl,
-    model: config.provider.model,
+    apiKey,
+    baseUrl,
+    model,
   });
 
   // Initialize agent
@@ -148,7 +119,7 @@ Get your API key at: https://sarvam.ai
       db={db}
       sessionId={sessionId}
       cwd={cwd()}
-      model={config.provider.model}
+      model={model}
       onExit={() => {
         unmount();
         // Restart with new session
@@ -171,7 +142,53 @@ Get your API key at: https://sarvam.ai
   });
 }
 
+async function main() {
+  const args = parseArgs();
+
+  if (args.help) {
+    showHelp();
+    process.exit(0);
+  }
+
+  if (args.version) {
+    showVersion();
+    process.exit(0);
+  }
+
+  // Load configuration
+  const config = await loadConfig();
+
+  // Check for API key — if missing, show onboarding
+  if (!config.provider.apiKey) {
+    const { unmount, waitUntilExit } = render(
+      <Onboarding
+        onComplete={async (apiKey: string) => {
+          // Save the key to ~/.kode/config.json
+          saveGlobalApiKey(apiKey);
+
+          // Unmount onboarding
+          unmount();
+
+          // Clear screen
+          console.clear();
+          console.log('\n✓ API key saved to ~/.kode/config.json\n');
+
+          // Launch the app with the new key
+          await launchApp(apiKey, config.provider.baseUrl, config.provider.model, args);
+        }}
+      />
+    );
+
+    await waitUntilExit();
+    return;
+  }
+
+  // API key exists — launch directly
+  await launchApp(config.provider.apiKey, config.provider.baseUrl, config.provider.model, args);
+}
+
 main().catch((error) => {
   console.error('Fatal error:', error);
   process.exit(1);
 });
+

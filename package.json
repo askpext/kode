@@ -1,21 +1,44 @@
 {
   "name": "kode-ai",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Kode - AI coding agent for the terminal powered by Sarvam AI",
   "type": "module",
+  "main": "./dist/cli.js",
   "bin": {
     "kode": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "QUICKSTART.md",
+    "kode.json.example",
+    "AGENTS.md.template"
+  ],
   "scripts": {
     "dev": "tsup --watch & node dist/cli.js",
-    "build": "tsup src/cli.tsx --format esm --dts"
+    "build": "tsup src/cli.tsx --format esm --dts",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AskPext/kode.git"
+  },
+  "homepage": "https://github.com/AskPext/kode#readme",
+  "bugs": {
+    "url": "https://github.com/AskPext/kode/issues"
   },
   "keywords": [
     "ai",
     "coding-agent",
     "sarvam",
     "cli",
-    "developer-tools"
+    "developer-tools",
+    "terminal",
+    "tui",
+    "llm",
+    "code-generation",
+    "ai-agent"
   ],
   "author": "Kode Contributors",
   "license": "MIT",

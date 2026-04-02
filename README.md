@@ -19,7 +19,7 @@ npm install -g kode-ai
 Or build from source:
 
 ```bash
-git clone https://github.com/your-org/kode.git
+git clone https://github.com/askpext/kode.git
 cd kode
 pnpm install
 pnpm build

@@ -1,6 +1,7 @@
 import { cosmiconfig } from 'cosmiconfig';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
+import { homedir } from 'os';
 
 export interface ProviderConfig {
   apiKey: string;
@@ -72,13 +73,18 @@ async function loadConfigFile(): Promise<Partial<KodeConfig> | null> {
 
 export async function loadConfig(): Promise<KodeConfig> {
   const fileConfig = await loadConfigFile();
+  const globalConfig = loadGlobalConfig();
 
-  // Merge configs with priority: file > env > defaults
+  // Merge configs with priority: project file > env > global config > defaults
   const config: KodeConfig = {
     provider: {
       ...defaultConfig.provider,
+      ...globalConfig?.provider,
       ...fileConfig?.provider,
-      apiKey: fileConfig?.provider?.apiKey || process.env.SARVAM_API_KEY || defaultConfig.provider.apiKey,
+      apiKey: fileConfig?.provider?.apiKey 
+        || process.env.SARVAM_API_KEY 
+        || globalConfig?.provider?.apiKey 
+        || defaultConfig.provider.apiKey,
     },
     permission: {
       ...defaultConfig.permission,
@@ -124,3 +130,51 @@ export function readAgentsFile(path: string | null): string | null {
     return null;
   }
 }
+
+function getGlobalConfigPath(): string {
+  return join(homedir(), '.kode', 'config.json');
+}
+
+function loadGlobalConfig(): Partial<KodeConfig> | null {
+  const configPath = getGlobalConfigPath();
+  
+  if (!existsSync(configPath)) {
+    return null;
+  }
+
+  try {
+    const content = readFileSync(configPath, 'utf-8');
+    return JSON.parse(content) as Partial<KodeConfig>;
+  } catch {
+    return null;
+  }
+}
+
+export function saveGlobalApiKey(apiKey: string): void {
+  const kodeDir = join(homedir(), '.kode');
+  const configPath = getGlobalConfigPath();
+
+  // Ensure ~/.kode/ exists
+  if (!existsSync(kodeDir)) {
+    mkdirSync(kodeDir, { recursive: true });
+  }
+
+  // Load existing config or create new
+  let config: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    try {
+      config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      // Start fresh if corrupt
+    }
+  }
+
+  // Set the API key
+  config.provider = {
+    ...(config.provider as Record<string, unknown> || {}),
+    apiKey,
+  };
+
+  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+}
+

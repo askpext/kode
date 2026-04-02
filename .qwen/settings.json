@@ -5,7 +5,11 @@
       "Bash(git init)",
       "Bash(git remote *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(npm *)",
+      "Bash(dir *)",
+      "Bash(findstr *)"
     ]
   },
   "$version": 3
