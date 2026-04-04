@@ -34,6 +34,7 @@ export class Agent {
   private baseUrl: string;
   private model: string;
   private recentNavigationAttempts: string[] = [];
+  private lastFailureMessage: string | null = null;
 
   constructor(options: AgentOptions) {
     this.sessionId = options.sessionId;
@@ -101,6 +102,11 @@ export class Agent {
       content: userMessage,
     });
 
+    const failureFollowupResponse = await this.tryHandleFailureFollowup(userMessage);
+    if (failureFollowupResponse) {
+      return failureFollowupResponse;
+    }
+
     const navigationResponse = await this.tryHandleNavigationIntent(userMessage);
     if (navigationResponse) {
       return navigationResponse;
@@ -116,7 +122,8 @@ export class Agent {
     let lastError: string | null = null;
     let retryCount = 0;
     const maxRetries = 3;
-    const seenToolRounds = new Set<string>();
+    let previousToolRoundSignature: string | null = null;
+    let repeatedToolRoundCount = 0;
 
     while (iterationCount < maxIterations) {
       iterationCount++;
@@ -128,6 +135,7 @@ export class Agent {
       const response = await this.callLLMWithRetry(lastError, retryCount);
 
       if (!response) {
+        this.lastFailureMessage = 'Error: Failed to get response from LLM';
         return {
           content: 'Error: Failed to get response from LLM',
           done: true,
@@ -145,8 +153,16 @@ export class Agent {
           .sort()
           .join('|');
 
-        if (seenToolRounds.has(toolRoundSignature)) {
+        if (toolRoundSignature === previousToolRoundSignature) {
+          repeatedToolRoundCount++;
+        } else {
+          previousToolRoundSignature = toolRoundSignature;
+          repeatedToolRoundCount = 0;
+        }
+
+        if (repeatedToolRoundCount >= 2) {
           const response = 'Error: Repeated identical tool calls detected. Please refine the path or try a different approach.';
+          this.lastFailureMessage = response;
           this.contextManager.addMessage({ role: 'assistant', content: response });
           await this.db.addMessage({
             sessionId: this.sessionId,
@@ -159,8 +175,6 @@ export class Agent {
             done: true,
           };
         }
-
-        seenToolRounds.add(toolRoundSignature);
         const toolResults: Array<{ toolCallId: string; result: string; isError?: boolean }> = [];
 
         for (const toolCall of toolCalls) {
@@ -180,6 +194,7 @@ export class Agent {
             // Retry failed tools
             retryCount++;
             lastError = result.result;
+            this.lastFailureMessage = result.result;
             break; // Restart the loop with retry
           }
 
@@ -234,6 +249,8 @@ export class Agent {
         role: 'assistant',
         content: response,
       });
+
+      this.lastFailureMessage = null;
 
       return {
         content: response,
@@ -367,7 +384,8 @@ export class Agent {
   async continueAfterPermission(): Promise<AgentResponse> {
     let iterationCount = 0;
     const maxIterations = 15;
-    const seenToolRounds = new Set<string>();
+    let previousToolRoundSignature: string | null = null;
+    let repeatedToolRoundCount = 0;
 
     while (iterationCount < maxIterations) {
       iterationCount++;
@@ -379,6 +397,7 @@ export class Agent {
       const response = await this.callLLM();
 
       if (!response) {
+        this.lastFailureMessage = 'Error: Failed to get response from LLM';
         return { content: 'Error: Failed to get response from LLM', done: true };
       }
 
@@ -391,8 +410,16 @@ export class Agent {
           .sort()
           .join('|');
 
-        if (seenToolRounds.has(toolRoundSignature)) {
+        if (toolRoundSignature === previousToolRoundSignature) {
+          repeatedToolRoundCount++;
+        } else {
+          previousToolRoundSignature = toolRoundSignature;
+          repeatedToolRoundCount = 0;
+        }
+
+        if (repeatedToolRoundCount >= 2) {
           const duplicateResponse = 'Error: Repeated identical tool calls detected after permission handling. Please refine the task or path.';
+          this.lastFailureMessage = duplicateResponse;
           this.contextManager.addMessage({ role: 'assistant', content: duplicateResponse });
           await this.db.addMessage({
             sessionId: this.sessionId,
@@ -402,8 +429,6 @@ export class Agent {
 
           return { content: duplicateResponse, done: true };
         }
-
-        seenToolRounds.add(toolRoundSignature);
         // If the resumed loop needs permission again, surface it back to the UI
         const requiresPermission = toolCalls.some((tc) =>
           ['bash', 'write_file', 'edit_file'].includes(tc.name)
@@ -439,6 +464,7 @@ export class Agent {
       // No more tools — agent is done
       this.contextManager.addMessage({ role: 'assistant', content: response });
       await this.db.addMessage({ sessionId: this.sessionId, role: 'assistant', content: response });
+      this.lastFailureMessage = null;
 
       return { content: response, done: true };
     }
@@ -464,6 +490,7 @@ export class Agent {
       await this.setCwd(nextCwd);
 
       const response = `Switched workspace to ${nextCwd}\nI can analyze this codebase, inspect files, or make changes here now.`;
+      this.lastFailureMessage = null;
       this.contextManager.addMessage({ role: 'assistant', content: response });
       await this.db.addMessage({
         sessionId: this.sessionId,
@@ -480,6 +507,7 @@ export class Agent {
     if (resolution.matches.length > 1) {
       this.recentNavigationAttempts = resolution.matches;
       const response = `I found multiple matching directories:\n${resolution.matches.map((match) => `- ${match}`).join('\n')}\nTell me which one to use.`;
+      this.lastFailureMessage = response;
       this.contextManager.addMessage({ role: 'assistant', content: response });
       await this.db.addMessage({
         sessionId: this.sessionId,
@@ -495,6 +523,7 @@ export class Agent {
 
     this.recentNavigationAttempts = resolution.attempted;
     const response = `I couldn't find that directory from the current workspace.\nTried:\n${resolution.attempted.slice(0, 5).map((path) => `- ${path}`).join('\n')}`;
+    this.lastFailureMessage = response;
     this.contextManager.addMessage({ role: 'assistant', content: response });
     await this.db.addMessage({
       sessionId: this.sessionId,
@@ -514,6 +543,31 @@ export class Agent {
     }
 
     const response = await analyzeCodebase(this.cwd);
+    this.lastFailureMessage = null;
+    this.contextManager.addMessage({ role: 'assistant', content: response });
+    await this.db.addMessage({
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: response,
+    });
+
+    return {
+      content: response,
+      done: true,
+    };
+  }
+
+  private async tryHandleFailureFollowup(userMessage: string): Promise<AgentResponse | null> {
+    if (!this.lastFailureMessage) {
+      return null;
+    }
+
+    const trimmed = userMessage.trim().toLowerCase();
+    if (!/^(what happened|what went wrong|why|why\?|explain)/.test(trimmed)) {
+      return null;
+    }
+
+    const response = `The last step failed.\n\n${this.lastFailureMessage}\n\nTry giving me a more specific path, or tell me the exact directory you want to use.`;
     this.contextManager.addMessage({ role: 'assistant', content: response });
     await this.db.addMessage({
       sessionId: this.sessionId,
@@ -529,9 +583,14 @@ export class Agent {
 
   private extractDirectoryHint(userMessage: string): string | null {
     const trimmed = userMessage.trim();
-    const navigationMatch = trimmed.match(/(?:^|\b)(?:go to|switch to|move to|open|enter|use)\s+(.+?)(?:\s+(?:dir|directory|folder))?$/i);
+    const navigationMatch = trimmed.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use)\s+(.+?)(?:\s+(?:dir|directory|folder))?$/i);
     if (navigationMatch) {
       return navigationMatch[1].trim();
+    }
+
+    const namedDirectoryMatch = trimmed.match(/(?:^|\b)(?:explore|inspect|open|use)\s+(?:a\s+)?(?:dir|directory|folder)\s+named\s+(.+?)$/i);
+    if (namedDirectoryMatch) {
+      return namedDirectoryMatch[1].trim();
     }
 
     const absolutePathMatch = trimmed.match(/(~?\/[^\s,;]+(?:\/[^\s,;]+)*)/);

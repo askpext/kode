@@ -90,4 +90,21 @@ describe('resolveDirectoryHint', () => {
 
     await rm(root, { recursive: true, force: true });
   });
+
+  it('finds projects inside common development roots like home/code', async () => {
+    const root = `${tmpdir()}${sep}kode-path-code-root-test`;
+    const usersRoot = `${root}${sep}Users`;
+    const cwd = `${usersRoot}${sep}Aditya${sep}kode`;
+    const target = `${usersRoot}${sep}Aditya${sep}code${sep}lowkey`;
+
+    await rm(root, { recursive: true, force: true });
+    await mkdir(cwd, { recursive: true });
+    await mkdir(target, { recursive: true });
+
+    const resolution = resolveDirectoryHint(cwd, 'lowkey');
+
+    expect(resolution.matches).toContain(target);
+
+    await rm(root, { recursive: true, force: true });
+  });
 });

@@ -57,6 +57,7 @@ export function resolveDirectoryHint(cwd: string, hint: string): DirectoryHintRe
   const home = homedir();
   const homeName = basename(home).toLowerCase();
   const hintSegments = normalizedHint.split(/[\\/]+/).filter(Boolean);
+  const commonRoots = getCommonProjectRoots(home, cwd);
   const attempted = new Set<string>();
   const matches = new Set<string>();
 
@@ -65,6 +66,9 @@ export function resolveDirectoryHint(cwd: string, hint: string): DirectoryHintRe
     candidateInputs.add(resolveFlexiblePath(cwd, normalizedHint));
     candidateInputs.add(resolve(dirname(cwd), normalizedHint));
     candidateInputs.add(resolve(home, normalizedHint));
+    for (const root of commonRoots) {
+      candidateInputs.add(resolve(root, normalizedHint));
+    }
 
     if (hintSegments.length > 0 && hintSegments[0].toLowerCase() === homeName) {
       candidateInputs.add(resolve(dirname(home), normalizedHint));
@@ -75,6 +79,9 @@ export function resolveDirectoryHint(cwd: string, hint: string): DirectoryHintRe
       candidateInputs.add(resolve(cwd, leaf));
       candidateInputs.add(resolve(dirname(cwd), leaf));
       candidateInputs.add(resolve(home, leaf));
+      for (const root of commonRoots) {
+        candidateInputs.add(resolve(root, leaf));
+      }
     }
   }
 
@@ -87,7 +94,7 @@ export function resolveDirectoryHint(cwd: string, hint: string): DirectoryHintRe
 
   const fallbackName = hintSegments[hintSegments.length - 1];
   if (matches.size === 0 && fallbackName) {
-    for (const root of [cwd, dirname(cwd), home, dirname(home)]) {
+    for (const root of [cwd, dirname(cwd), home, dirname(home), ...commonRoots]) {
       attempted.add(root);
       for (const match of findMatchingChildDirectories(root, fallbackName)) {
         matches.add(match);
@@ -134,4 +141,28 @@ function findMatchingChildDirectories(root: string, name: string): string[] {
   } catch {
     return [];
   }
+}
+
+function getCommonProjectRoots(home: string, cwd: string): string[] {
+  const localHome = dirname(cwd);
+  return Array.from(new Set([
+    resolve(home, 'code'),
+    resolve(home, 'Code'),
+    resolve(home, 'projects'),
+    resolve(home, 'Projects'),
+    resolve(home, 'dev'),
+    resolve(home, 'Dev'),
+    resolve(home, 'work'),
+    resolve(home, 'workspace'),
+    resolve(home, 'src'),
+    resolve(localHome, 'code'),
+    resolve(localHome, 'Code'),
+    resolve(localHome, 'projects'),
+    resolve(localHome, 'Projects'),
+    resolve(localHome, 'dev'),
+    resolve(localHome, 'Dev'),
+    resolve(localHome, 'work'),
+    resolve(localHome, 'workspace'),
+    resolve(localHome, 'src'),
+  ]));
 }

@@ -153,12 +153,55 @@ describe('Agent workspace flow', () => {
 
       vi.spyOn(agent as unknown as { callLLM: () => Promise<string | null> }, 'callLLM')
         .mockResolvedValueOnce('tool_call:{"name":"list_dir","args":{"path":"/home/aditya/lowkey"}}')
+        .mockResolvedValueOnce('tool_call:{"name":"list_dir","args":{"path":"/home/aditya/lowkey"}}')
         .mockResolvedValueOnce('tool_call:{"name":"list_dir","args":{"path":"/home/aditya/lowkey"}}');
 
-      const result = await agent.run('analyze that path');
+      const result = await agent.run('find that project');
 
       expect(result.done).toBe(true);
       expect(result.content).toContain('Repeated identical tool calls detected');
+    } finally {
+      vi.restoreAllMocks();
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('explains the last failure when the user asks what happened', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-why-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+    await writeFile(join(kodeDir, 'README.md'), '# kode\n', 'utf-8');
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      vi.spyOn(agent as unknown as { callLLM: () => Promise<string | null> }, 'callLLM')
+        .mockResolvedValueOnce('tool_call:{"name":"list_dir","args":{"path":"/home/aditya/lowkey"}}')
+        .mockResolvedValueOnce('tool_call:{"name":"list_dir","args":{"path":"/home/aditya/lowkey"}}')
+        .mockResolvedValueOnce('tool_call:{"name":"list_dir","args":{"path":"/home/aditya/lowkey"}}');
+
+      const failed = await agent.run('find lowkey');
+      expect(failed.content).toContain('Repeated identical tool calls detected');
+
+      const followup = await agent.run('what happened?');
+      expect(followup.done).toBe(true);
+      expect(followup.content).toContain('The last step failed.');
+      expect(followup.content).toContain('Repeated identical tool calls detected');
     } finally {
       vi.restoreAllMocks();
       await db.close();

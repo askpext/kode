@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo, useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { highlightFile, getLanguageFromPath } from '../utils/highlight.js';
 
@@ -71,46 +71,56 @@ function renderContent(content: string): React.ReactNode[] {
   return parts.length > 0 ? parts : [<Text key="plain">{content}</Text>];
 }
 
-export function Chat({ messages }: ChatProps) {
-  return (
-    <Box flexDirection="column">
-      {messages.map((message, index) => (
-        <Box key={index} flexDirection="column" marginBottom={1}>
-          {message.role === 'user' && (
-            <Box>
-              <Text bold color="cyan">
-                You:{' '}
-              </Text>
-              <Text>{message.content}</Text>
-            </Box>
-          )}
+const ChatMessageItem = memo(function ChatMessageItem({
+  message,
+}: {
+  message: Message;
+}) {
+  const renderedContent = useMemo(() => renderContent(message.content), [message.content]);
 
-          {message.role === 'assistant' && (
-            <Box flexDirection="column" marginTop={1}>
-              {message.content && (
-                <Box 
-                  flexDirection="column" 
-                  borderStyle="single" 
-                  borderTop={false} 
-                  borderRight={false} 
-                  borderBottom={false} 
-                  borderColor="green" 
-                  paddingLeft={1}
-                >
-                  <Box marginBottom={1}>
-                    <Text bold color="green">
-                      Kode
-                    </Text>
-                  </Box>
-                  <Box flexDirection="column">
-                    {renderContent(message.content)}
-                  </Box>
-                </Box>
-              )}
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      {message.role === 'user' && (
+        <Box>
+          <Text bold color="cyan">
+            You:{' '}
+          </Text>
+          <Text>{message.content}</Text>
+        </Box>
+      )}
+
+      {message.role === 'assistant' && (
+        <Box flexDirection="column" marginTop={1}>
+          {message.content && (
+            <Box
+              flexDirection="column"
+              borderStyle="single"
+              borderTop={false}
+              borderRight={false}
+              borderBottom={false}
+              borderColor="green"
+              paddingLeft={1}
+            >
+              <Box marginBottom={1}>
+                <Text bold color="green">
+                  Kode
+                </Text>
+              </Box>
+              <Box flexDirection="column">{renderedContent}</Box>
             </Box>
           )}
         </Box>
+      )}
+    </Box>
+  );
+});
+
+export const Chat = memo(function Chat({ messages }: ChatProps) {
+  return (
+    <Box flexDirection="column">
+      {messages.map((message, index) => (
+        <ChatMessageItem key={`${index}-${message.role}-${message.content.slice(0, 24)}`} message={message} />
       ))}
     </Box>
   );
-}
+});

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { memo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 
@@ -10,7 +10,13 @@ interface InputProps {
   onClear?: () => void;
 }
 
-export function Input({ onSubmit, disabled = false, placeholder = 'Type a message...', commandHistory = [], onClear }: InputProps) {
+export const Input = memo(function Input({
+  onSubmit,
+  disabled = false,
+  placeholder = 'Type a message...',
+  commandHistory = [],
+  onClear,
+}: InputProps) {
   const [value, setValue] = useState('');
   const [isFocused, setIsFocused] = useState(true);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -93,4 +99,4 @@ export function Input({ onSubmit, disabled = false, placeholder = 'Type a messag
       </Box>
     </Box>
   );
-}
+});
