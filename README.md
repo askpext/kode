@@ -2,6 +2,8 @@
 
 **Kode** is an open-source AI coding agent for the terminal, powered by Sarvam AI's free `sarvam-m` model.
 
+Kode officially targets WSL, Linux, and macOS. Native Windows PowerShell or `cmd.exe` is not currently supported.
+
 ## Why Kode?
 
 - **Free LLM**: Powered by Sarvam AI's `sarvam-m` model - completely free for developers
@@ -148,3 +150,4 @@ Visit [https://sarvam.ai](https://sarvam.ai) to get your free API key.
 ---
 
 Built with ❤️ for developers
+

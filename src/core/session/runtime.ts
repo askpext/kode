@@ -1,6 +1,7 @@
 import { cwd as processCwd } from 'process';
 import SessionDB from '../../db/sessions.js';
 import { Agent } from '../../agent/loop.js';
+import { isNativeWindowsEnvironment } from '../../utils/platform.js';
 
 export interface SessionRuntimeConfig {
   apiKey: string;
@@ -22,18 +23,28 @@ export interface SessionRuntime {
   model: string;
 }
 
+export function assertSupportedRuntimePlatform(): void {
+  if (isNativeWindowsEnvironment()) {
+    throw new Error(
+      'Kode currently supports WSL, Linux, and macOS. On Windows, please run it inside WSL.'
+    );
+  }
+}
+
 export async function createSessionRuntime(
   config: SessionRuntimeConfig,
   args: SessionRuntimeArgs
 ): Promise<SessionRuntime> {
+  assertSupportedRuntimePlatform();
+
   const db = new SessionDB();
   await db.ensureInit();
 
   const runtimeCwd = processCwd();
-  const sessionId = await resolveSessionId(db, runtimeCwd, args);
+  const sessionResolution = await resolveSession(db, runtimeCwd, args);
   const agent = new Agent({
-    sessionId,
-    cwd: runtimeCwd,
+    sessionId: sessionResolution.sessionId,
+    cwd: sessionResolution.cwd,
     db,
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
@@ -45,29 +56,39 @@ export async function createSessionRuntime(
   return {
     db,
     agent,
-    sessionId,
-    cwd: runtimeCwd,
+    sessionId: sessionResolution.sessionId,
+    cwd: sessionResolution.cwd,
     model: config.model,
   };
 }
 
-async function resolveSessionId(
+async function resolveSession(
   db: SessionDB,
   runtimeCwd: string,
   args: SessionRuntimeArgs
-): Promise<string> {
+): Promise<{ sessionId: string; cwd: string }> {
   if (args.resume) {
     const session = await db.getSession(args.resume);
     if (!session) {
       throw new Error(`Session not found: ${args.resume}`);
     }
-    return args.resume;
+    return {
+      sessionId: args.resume,
+      cwd: session.cwd,
+    };
   }
 
   if (args.new || !args.session) {
     const session = await db.createSession(runtimeCwd);
-    return session.id;
+    return {
+      sessionId: session.id,
+      cwd: runtimeCwd,
+    };
   }
 
-  return args.session;
+  const session = await db.getSession(args.session);
+  return {
+    sessionId: args.session,
+    cwd: session?.cwd || runtimeCwd,
+  };
 }

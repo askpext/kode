@@ -5,7 +5,7 @@ import { App } from './ui/App.js';
 import { Onboarding } from './ui/Onboarding.js';
 import { loadConfig, saveGlobalApiKey } from './config.js';
 import { cleanupBackgroundProcesses } from './tools/bash.js';
-import { createSessionRuntime } from './core/session/runtime.js';
+import { assertSupportedRuntimePlatform, createSessionRuntime } from './core/session/runtime.js';
 import { CliArgs, getHelpText, getVersionText, parseArgs } from './core/cli/args.js';
 
 async function launchApp(apiKey: string, baseUrl: string, model: string, args: CliArgs) {
@@ -44,6 +44,8 @@ async function launchApp(apiKey: string, baseUrl: string, model: string, args: C
 }
 
 async function main() {
+  assertSupportedRuntimePlatform();
+
   const args = parseArgs();
 
   if (args.help) {
@@ -80,7 +82,11 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error('Fatal error:', error);
+  if (error instanceof Error) {
+    console.error(error.message);
+  } else {
+    console.error('Fatal error:', error);
+  }
   cleanupBackgroundProcesses();
   process.exit(1);
 });

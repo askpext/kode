@@ -1,4 +1,5 @@
 import { execa } from 'execa';
+import { isNativeWindowsEnvironment } from '../utils/platform.js';
 
 export interface BashArgs {
   command: string;
@@ -19,9 +20,16 @@ const DEFAULT_TIMEOUT = 30000; // 30 seconds
 export async function bashTool(args: BashArgs, cwd: string, timeout: number = DEFAULT_TIMEOUT): Promise<BashResult> {
   const commandCwd = args.cwd || cwd;
 
+  if (isNativeWindowsEnvironment()) {
+    return {
+      success: false,
+      error: 'Kode bash execution supports WSL, Linux, and macOS. On Windows, run Kode inside WSL.',
+    };
+  }
+
   try {
     const child = execa(args.command, {
-      shell: true,
+      shell: '/bin/bash',
       cwd: commandCwd,
       timeout,
       buffer: false,
@@ -133,10 +141,17 @@ export interface BashBackgroundArgs {
 }
 
 export async function bashBackgroundTool(args: BashBackgroundArgs, cwd: string): Promise<{ success: boolean; id?: string; error?: string }> {
+  if (isNativeWindowsEnvironment()) {
+    return {
+      success: false,
+      error: 'Kode background bash supports WSL, Linux, and macOS. On Windows, run Kode inside WSL.',
+    };
+  }
+
   try {
     const id = uuidv4();
     const child = execa(args.command, {
-      shell: true,
+      shell: '/bin/bash',
       cwd: args.cwd || cwd,
       buffer: false,
       all: true,

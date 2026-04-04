@@ -33,6 +33,7 @@ export class Agent {
   private apiKey: string;
   private baseUrl: string;
   private model: string;
+  private recentNavigationAttempts: string[] = [];
 
   constructor(options: AgentOptions) {
     this.sessionId = options.sessionId;
@@ -115,6 +116,7 @@ export class Agent {
     let lastError: string | null = null;
     let retryCount = 0;
     const maxRetries = 3;
+    const seenToolRounds = new Set<string>();
 
     while (iterationCount < maxIterations) {
       iterationCount++;
@@ -138,6 +140,27 @@ export class Agent {
       const cleanContent = this.stripToolCallContent(response);
 
       if (toolCalls.length > 0) {
+        const toolRoundSignature = toolCalls
+          .map((toolCall) => `${toolCall.name}:${JSON.stringify(toolCall.args)}`)
+          .sort()
+          .join('|');
+
+        if (seenToolRounds.has(toolRoundSignature)) {
+          const response = 'Error: Repeated identical tool calls detected. Please refine the path or try a different approach.';
+          this.contextManager.addMessage({ role: 'assistant', content: response });
+          await this.db.addMessage({
+            sessionId: this.sessionId,
+            role: 'assistant',
+            content: response,
+          });
+
+          return {
+            content: response,
+            done: true,
+          };
+        }
+
+        seenToolRounds.add(toolRoundSignature);
         const toolResults: Array<{ toolCallId: string; result: string; isError?: boolean }> = [];
 
         for (const toolCall of toolCalls) {
@@ -344,6 +367,7 @@ export class Agent {
   async continueAfterPermission(): Promise<AgentResponse> {
     let iterationCount = 0;
     const maxIterations = 15;
+    const seenToolRounds = new Set<string>();
 
     while (iterationCount < maxIterations) {
       iterationCount++;
@@ -362,6 +386,24 @@ export class Agent {
       const cleanContent = this.stripToolCallContent(response);
 
       if (toolCalls.length > 0) {
+        const toolRoundSignature = toolCalls
+          .map((toolCall) => `${toolCall.name}:${JSON.stringify(toolCall.args)}`)
+          .sort()
+          .join('|');
+
+        if (seenToolRounds.has(toolRoundSignature)) {
+          const duplicateResponse = 'Error: Repeated identical tool calls detected after permission handling. Please refine the task or path.';
+          this.contextManager.addMessage({ role: 'assistant', content: duplicateResponse });
+          await this.db.addMessage({
+            sessionId: this.sessionId,
+            role: 'assistant',
+            content: duplicateResponse,
+          });
+
+          return { content: duplicateResponse, done: true };
+        }
+
+        seenToolRounds.add(toolRoundSignature);
         // If the resumed loop needs permission again, surface it back to the UI
         const requiresPermission = toolCalls.some((tc) =>
           ['bash', 'write_file', 'edit_file'].includes(tc.name)
@@ -418,6 +460,7 @@ export class Agent {
 
     if (resolution.matches.length === 1) {
       const nextCwd = resolution.matches[0];
+      this.recentNavigationAttempts = [];
       await this.setCwd(nextCwd);
 
       const response = `Switched workspace to ${nextCwd}\nI can analyze this codebase, inspect files, or make changes here now.`;
@@ -435,6 +478,7 @@ export class Agent {
     }
 
     if (resolution.matches.length > 1) {
+      this.recentNavigationAttempts = resolution.matches;
       const response = `I found multiple matching directories:\n${resolution.matches.map((match) => `- ${match}`).join('\n')}\nTell me which one to use.`;
       this.contextManager.addMessage({ role: 'assistant', content: response });
       await this.db.addMessage({
@@ -449,6 +493,7 @@ export class Agent {
       };
     }
 
+    this.recentNavigationAttempts = resolution.attempted;
     const response = `I couldn't find that directory from the current workspace.\nTried:\n${resolution.attempted.slice(0, 5).map((path) => `- ${path}`).join('\n')}`;
     this.contextManager.addMessage({ role: 'assistant', content: response });
     await this.db.addMessage({
@@ -489,6 +534,23 @@ export class Agent {
       return navigationMatch[1].trim();
     }
 
+    const absolutePathMatch = trimmed.match(/(~?\/[^\s,;]+(?:\/[^\s,;]+)*)/);
+    if (absolutePathMatch) {
+      return absolutePathMatch[1].trim();
+    }
+
+    const windowsAbsolutePathMatch = trimmed.match(/([A-Za-z]:\\[^\s,;]+(?:\\[^\s,;]+)*)/);
+    if (windowsAbsolutePathMatch) {
+      return windowsAbsolutePathMatch[1].trim();
+    }
+
+    const attemptedPathMatch = [...this.recentNavigationAttempts]
+      .sort((left, right) => right.length - left.length)
+      .find((attempt) => trimmed.includes(attempt));
+    if (attemptedPathMatch) {
+      return attemptedPathMatch;
+    }
+
     const pathLikeMatch = trimmed.match(/^([A-Za-z]:\\[^\s]+|~?[\\/][^\s]+|[\w.-]+[\\/][^\s]+)(?:\s+.*)?$/);
     if (pathLikeMatch) {
       return pathLikeMatch[1].trim();
@@ -507,10 +569,10 @@ CRITICAL TOOL RULES:
 1. TOOL PRIORITY: Always prefer built-in tools over bash.
    - list_dir → explore directories (NEVER use bash ls, find, dir)
    - read_file → read file contents (NEVER use bash cat, type)
-   - grep → search code (NEVER use bash grep, findstr)
+   - grep -> search code (NEVER use bash grep)
    - bash → ONLY for: builds, tests, git, npm/yarn installs, running scripts
-2. WINDOWS: If platform is 'win32', use PowerShell syntax (Get-ChildItem NOT ls) for bash commands.
-3. CD: NEVER use 'cd' in bash — use absolute paths.
+2. PLATFORM: Kode targets WSL, Linux, and macOS. Use POSIX paths and bash syntax.
+3. CD: NEVER use 'cd' in bash - use absolute paths.
 4. CODE: Always write COMPLETE well-formed code (e.g. HTML with DOCTYPE/head/body).
 
 OUTPUT FORMAT:
@@ -834,3 +896,4 @@ Respond professionally like a developer tool, not a chatbot.`;
     }
   }
 }
+

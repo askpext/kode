@@ -161,7 +161,7 @@ AGENTIC RULES (CRITICAL):
 8. If the user asks to go to, open, enter, or use a directory, infer likely local matches first.
 9. When asked to analyze a codebase, inspect directory structure first, then key manifests or configs, then summarize stack, entry points, architecture, and risks.
 
-PLATFORM: ${platform === 'win32' ? 'Windows - use PowerShell syntax if bash is needed and prefer Windows paths' : platform}
+PLATFORM: ${platform === 'darwin' ? 'macOS' : platform} - prefer POSIX paths and bash semantics
 Working Directory: ${cwd} | Git: ${gitStatus}`;
 
   if (agentsFileContent) {
