@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
 import { existsSync } from 'fs';
 import { createTwoFilesPatch } from 'diff';
+import { resolveWorkspacePath } from './path.js';
 
 export interface EditFileArgs {
   path: string;
@@ -27,17 +27,16 @@ export async function generateDiff(filePath: string, oldContent: string, newCont
     'modified'
   );
 
-  // Colorize the diff
   const lines = patch.split('\n');
   const coloredLines = lines.map((line) => {
     if (line.startsWith('+') && !line.startsWith('+++')) {
-      return `\u001b[32m${line}\u001b[0m`; // Green for additions
+      return `\u001b[32m${line}\u001b[0m`;
     }
     if (line.startsWith('-') && !line.startsWith('---')) {
-      return `\u001b[31m${line}\u001b[0m`; // Red for deletions
+      return `\u001b[31m${line}\u001b[0m`;
     }
     if (line.startsWith('@@')) {
-      return `\u001b[36m${line}\u001b[0m`; // Cyan for hunk headers
+      return `\u001b[36m${line}\u001b[0m`;
     }
     return line;
   });
@@ -46,25 +45,23 @@ export async function generateDiff(filePath: string, oldContent: string, newCont
 }
 
 export async function editFileTool(args: EditFileArgs, cwd: string): Promise<EditFileResult> {
-  const filePath = join(cwd, args.path);
-
-  if (!existsSync(filePath)) {
-    return {
-      success: false,
-      error: `File not found: ${args.path}`,
-    };
-  }
-
   try {
-    const content = await readFile(filePath, 'utf-8');
+    const { absolutePath, displayPath } = resolveWorkspacePath(cwd, args.path);
 
-    // Count occurrences of target
+    if (!existsSync(absolutePath)) {
+      return {
+        success: false,
+        error: `File not found: ${displayPath}`,
+      };
+    }
+
+    const content = await readFile(absolutePath, 'utf-8');
     const occurrences = (content.match(new RegExp(escapeRegex(args.target), 'g')) || []).length;
 
     if (occurrences === 0) {
       return {
         success: false,
-        error: `Target string not found in file: ${args.path}`,
+        error: `Target string not found in file: ${displayPath}`,
         occurrences: 0,
       };
     }
@@ -77,16 +74,13 @@ export async function editFileTool(args: EditFileArgs, cwd: string): Promise<Edi
       };
     }
 
-    // Replace the target with replacement
     const newContent = content.replace(args.target, args.replacement);
-
-    // Generate diff
-    const diff = await generateDiff(args.path, content, newContent);
+    const diff = await generateDiff(displayPath, content, newContent);
 
     return {
       success: true,
       diff,
-      filePath: args.path,
+      filePath: displayPath,
       occurrences: 1,
     };
   } catch (error) {
@@ -99,19 +93,19 @@ export async function editFileTool(args: EditFileArgs, cwd: string): Promise<Edi
 }
 
 export async function applyEditFile(args: EditFileArgs, cwd: string): Promise<{ success: boolean; error?: string }> {
-  const filePath = join(cwd, args.path);
-
-  if (!existsSync(filePath)) {
-    return {
-      success: false,
-      error: `File not found: ${args.path}`,
-    };
-  }
-
   try {
-    const content = await readFile(filePath, 'utf-8');
+    const { absolutePath, displayPath } = resolveWorkspacePath(cwd, args.path);
+
+    if (!existsSync(absolutePath)) {
+      return {
+        success: false,
+        error: `File not found: ${displayPath}`,
+      };
+    }
+
+    const content = await readFile(absolutePath, 'utf-8');
     const newContent = content.replace(args.target, args.replacement);
-    await writeFile(filePath, newContent, 'utf-8');
+    await writeFile(absolutePath, newContent, 'utf-8');
 
     return { success: true };
   } catch (error) {
@@ -135,4 +129,64 @@ export function formatEditResult(result: EditFileResult): string {
   let output = `File: ${result.filePath}\n`;
   output += result.diff || '(no changes)';
   return output;
+}
+
+export interface MultiEditArgs {
+  path: string;
+  edits: Array<{ target: string; replacement: string }>;
+}
+
+export async function multiEditFileTool(args: MultiEditArgs, cwd: string): Promise<EditFileResult> {
+  try {
+    const { absolutePath, displayPath } = resolveWorkspacePath(cwd, args.path);
+
+    if (!existsSync(absolutePath)) {
+      return { success: false, error: `File not found: ${displayPath}` };
+    }
+
+    let content = await readFile(absolutePath, 'utf-8');
+    const oldContent = content;
+
+    for (let i = 0; i < args.edits.length; i++) {
+      const { target, replacement } = args.edits[i];
+      const occurrences = (content.match(new RegExp(escapeRegex(target), 'g')) || []).length;
+      if (occurrences === 0) {
+        return { success: false, error: `Target string not found for edit index ${i}: \n${target}` };
+      }
+      if (occurrences > 1) {
+        return { success: false, error: `Target string found ${occurrences} times for edit index ${i}. Must be unique.` };
+      }
+      content = content.replace(target, replacement);
+    }
+
+    const diff = await generateDiff(displayPath, oldContent, content);
+
+    return {
+      success: true,
+      diff,
+      filePath: displayPath,
+      occurrences: args.edits.length,
+    };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+export async function applyMultiEditFile(args: MultiEditArgs, cwd: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { absolutePath, displayPath } = resolveWorkspacePath(cwd, args.path);
+
+    if (!existsSync(absolutePath)) {
+      return { success: false, error: `File not found: ${displayPath}` };
+    }
+
+    let content = await readFile(absolutePath, 'utf-8');
+    for (const edit of args.edits) {
+      content = content.replace(edit.target, edit.replacement);
+    }
+    await writeFile(absolutePath, content, 'utf-8');
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
 }

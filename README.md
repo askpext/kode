@@ -67,7 +67,7 @@ Once inside Kode, you can:
 | `/resume <id>` | Resume a specific session |
 | `/undo` | Restore last git snapshot |
 | `/clear` | Clear the screen |
-| `/model` | Show current model info |
+| `/model` | Open interactive model switcher (sarvam-30b, 105b, etc.) |
 | `/cost` | Show token usage |
 
 ### Tools
@@ -76,9 +76,11 @@ Kode has access to these tools via prompt-based calling:
 
 - `read_file` - Read file contents (smart chunking for large files)
 - `write_file` - Write files (always shows diff first)
-- `edit_file` - Targeted string replacement (shows diff first)
-- `bash` - Run shell commands (with permission prompts)
+- `edit_file` / `replace_multi` - Targeted and multi-block text replacement
+- `bash` - Run shell commands synchronously
+- `bash_background` / `bash_status` - Spawn and manage long-running dev servers
 - `grep` - Search codebase with ripgrep
+- `fetch_url` - Native web fetching (HTML to Markdown)
 - `list_dir` - List directory contents
 - `todo_write` / `todo_read` - Planning and task tracking
 
@@ -118,11 +120,13 @@ Kode automatically reads `AGENTS.md` or `CLAUDE.md` from your project root and a
 
 ## Key Features
 
-1. **Never silently modifies files** - Always shows colored diffs before writing
-2. **Smart large file handling** - Chunks files over 8000 tokens, never crashes
-3. **Git snapshots** - Takes a snapshot before every write for instant undo
-4. **Context compression** - Automatically summarizes at 80% of 32k token limit
-5. **Clean minimal UI** - No clutter, just chat and todos
+1. **Native Web Browsing** - Can fetch documentation and issues directly from URLs
+2. **Background Processes** - Run watch servers and test runners asynchronously
+3. **Interactive Model Switcher** - Hot-swap between Sarvam models dynamically via TUI
+4. **Never silently modifies files** - Always shows colored diffs before writing
+5. **Smart large file handling** - Chunks files over 8000 tokens, never crashes
+6. **Git snapshots** - Takes a snapshot before every write for instant undo
+7. **Context compression** - Automatically summarizes at 80% of 32k token limit
 
 ## Tech Stack
 

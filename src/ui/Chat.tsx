@@ -86,15 +86,23 @@ export function Chat({ messages }: ChatProps) {
           )}
 
           {message.role === 'assistant' && (
-            <Box flexDirection="column">
+            <Box flexDirection="column" marginTop={1}>
               {message.content && (
-                <Box flexDirection="column">
-                  <Box>
+                <Box 
+                  flexDirection="column" 
+                  borderStyle="single" 
+                  borderTop={false} 
+                  borderRight={false} 
+                  borderBottom={false} 
+                  borderColor="green" 
+                  paddingLeft={1}
+                >
+                  <Box marginBottom={1}>
                     <Text bold color="green">
-                      Kode:{' '}
+                      Kode
                     </Text>
                   </Box>
-                  <Box flexDirection="column" marginLeft={2}>
+                  <Box flexDirection="column">
                     {renderContent(message.content)}
                   </Box>
                 </Box>

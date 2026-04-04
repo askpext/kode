@@ -35,7 +35,6 @@ export class ContextManager {
   }
 
   addSystemPrompt(prompt: string): void {
-    // Remove existing system prompt if present
     this.messages = this.messages.filter((m) => m.role !== 'system');
     this.messages.unshift({ role: 'system', content: prompt });
   }
@@ -85,8 +84,7 @@ export class ContextManager {
       0.6
     );
 
-    // Reconstruct messages with tool calls and results
-    this.messages = compressed.map((m, index) => {
+    this.messages = compressed.map((m) => {
       const originalMessage = this.messages.find(
         (orig) => orig.role === m.role && orig.content === m.content
       );
@@ -95,7 +93,6 @@ export class ContextManager {
         return originalMessage;
       }
 
-      // For compressed/summarized messages, create a new message
       return {
         role: m.role as Message['role'],
         content: m.content,
@@ -104,7 +101,6 @@ export class ContextManager {
   }
 
   clear(): void {
-    // Keep only system message
     this.messages = this.messages.filter((m) => m.role === 'system');
   }
 
@@ -143,19 +139,30 @@ export function buildSystemPrompt(
   gitStatus: string,
   agentsFileContent: string | null
 ): string {
-  let prompt = `You are Kode, an AI coding agent. You help developers understand codebases, plan features, write and fix code.
+  let prompt = `You are Kode, an autonomous AI coding agent. You help developers understand codebases, plan features, write and fix code.
 
-You have access to tools: read_file, write_file, edit_file, bash, grep, list_dir, todo_write, todo_read.
+You have access to tools: read_file, write_file, edit_file, bash, grep, list_dir, todo_write, todo_read, replace_multi, fetch_url, bash_background, bash_status.
 
-Rules:
-- Always read before you write. Never guess file contents.
-- Use todo_write to plan multi-step tasks before starting.
-- Show diffs before applying changes.
-- Ask for clarification if the task is ambiguous.
-- Be concise. No unnecessary explanation.
-- Prefer targeted edits over full rewrites.
+TOOL PRIORITY (CRITICAL - always prefer built-in tools over bash):
+- list_dir -> list and explore directories (never use bash ls, find, or dir)
+- read_file -> read file contents (never use bash cat or type)
+- grep -> search code (never use bash grep or findstr)
+- bash -> only for builds, git, installs, or running scripts
+- never use "cd" in bash; pass absolute paths instead
 
-Environment: ${cwd} | ${platform} | ${gitStatus}`;
+AGENTIC RULES (CRITICAL):
+1. Always explore with list_dir or grep before assuming paths. Read files before editing.
+2. When creating code files, write complete well-formed code instead of fragments.
+3. If a tool fails, try a different approach instead of stalling.
+4. Use edit_file for targeted changes and write_file for full-file writes.
+5. Be concise. Avoid filler and keep moving.
+6. Ask the user only when the task is genuinely ambiguous.
+7. Infer likely local paths before asking for a perfect absolute path.
+8. If the user asks to go to, open, enter, or use a directory, infer likely local matches first.
+9. When asked to analyze a codebase, inspect directory structure first, then key manifests or configs, then summarize stack, entry points, architecture, and risks.
+
+PLATFORM: ${platform === 'win32' ? 'Windows - use PowerShell syntax if bash is needed and prefer Windows paths' : platform}
+Working Directory: ${cwd} | Git: ${gitStatus}`;
 
   if (agentsFileContent) {
     prompt += `\n\nProject Guidelines:\n${agentsFileContent}`;

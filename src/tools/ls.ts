@@ -1,6 +1,7 @@
 import { readdir, stat } from 'fs/promises';
-import { join } from 'path';
 import { existsSync } from 'fs';
+import { join } from 'path';
+import { resolveDirectoryHint, resolveFlexiblePath } from './path.js';
 
 export interface LsArgs {
   path?: string;
@@ -19,7 +20,14 @@ export interface LsResult {
 }
 
 export async function lsTool(args: LsArgs, cwd: string): Promise<LsResult> {
-  const targetPath = args.path ? join(cwd, args.path) : cwd;
+  let targetPath = args.path ? resolveFlexiblePath(cwd, args.path) : cwd;
+
+  if (args.path && !existsSync(targetPath)) {
+    const hintResolution = resolveDirectoryHint(cwd, args.path);
+    if (hintResolution.matches.length === 1) {
+      targetPath = hintResolution.matches[0];
+    }
+  }
 
   if (!existsSync(targetPath)) {
     return {
@@ -80,7 +88,7 @@ export async function lsTool(args: LsArgs, cwd: string): Promise<LsResult> {
     return {
       success: true,
       entries: results,
-      path: args.path || cwd,
+      path: targetPath,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error listing directory';

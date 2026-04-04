@@ -178,3 +178,27 @@ export function saveGlobalApiKey(apiKey: string): void {
   writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
 }
 
+export function saveGlobalModel(model: string): void {
+  const kodeDir = join(homedir(), '.kode');
+  const configPath = getGlobalConfigPath();
+
+  if (!existsSync(kodeDir)) {
+    mkdirSync(kodeDir, { recursive: true });
+  }
+
+  let config: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    try {
+      config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      // Start fresh if corrupt
+    }
+  }
+
+  config.provider = {
+    ...(config.provider as Record<string, unknown> || {}),
+    model,
+  };
+
+  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+}

@@ -1,7 +1,7 @@
 import { readFile } from 'fs/promises';
-import { join, relative } from 'path';
 import { existsSync } from 'fs';
 import { countTokens } from '../utils/tokens.js';
+import { resolveFlexiblePath } from './path.js';
 
 export interface ReadFileArgs {
   path: string;
@@ -22,7 +22,7 @@ const MAX_FILE_TOKENS = 8000;
 const DEFAULT_PREVIEW_LINES = 200;
 
 export async function readFileTool(args: ReadFileArgs, cwd: string): Promise<ReadFileResult> {
-  const filePath = join(cwd, args.path);
+  const filePath = resolveFlexiblePath(cwd, args.path);
 
   if (!existsSync(filePath)) {
     return {

@@ -9,3 +9,5 @@ kode.json
 coverage/
 .vscode/
 .idea/
+.qwen/
+*.tgz

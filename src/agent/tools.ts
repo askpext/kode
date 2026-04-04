@@ -7,11 +7,7 @@ export interface ToolDefinition {
   description: string;
   parameters: {
     type: 'object';
-    properties: Record<string, {
-      type: string;
-      description: string;
-      required?: boolean;
-    }>;
+    properties: Record<string, any>;
     required?: string[];
   };
 }
@@ -195,6 +191,79 @@ export const toolDefinitions: ToolDefinition[] = [
       properties: {},
     },
   },
+  {
+    name: 'fetch_url',
+    description: 'Fetch a URL and read its content (HTML is converted to text).',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'The URL to fetch over HTTP/HTTPS.',
+        },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'replace_multi',
+    description: 'Apply multiple replacements to a single file at once. Use this instead of edit_file when editing multiple areas of a file. Requires permission.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Path to the file relative to the current working directory',
+        },
+        edits: {
+          type: 'array',
+          description: 'List of target/replacement pairs',
+          items: {
+            type: 'object',
+            properties: {
+              target: { type: 'string', description: 'Exact string to find and replace' },
+              replacement: { type: 'string', description: 'String to replace the target with' },
+            },
+            required: ['target', 'replacement'],
+          },
+        },
+      },
+      required: ['path', 'edits'],
+    },
+  },
+  {
+    name: 'bash_background',
+    description: 'Execute a shell command in the background. Returns a process ID immediately. Requires permission.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: {
+          type: 'string',
+          description: 'Shell command to execute',
+        },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'bash_status',
+    description: 'Read the logs of a background process, or terminate it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'The background process ID returned by bash_background',
+        },
+        action: {
+          type: 'string',
+          enum: ['read', 'terminate'],
+          description: 'Action to perform: read logs or terminate process',
+        },
+      },
+      required: ['id', 'action'],
+    },
+  },
 ];
 
 // Tool executor
@@ -230,6 +299,14 @@ export class ToolExecutor {
         return this.executeTodoWrite(toolCall, sessionId);
       case 'todo_read':
         return this.executeTodoRead(toolCall, sessionId);
+      case 'fetch_url':
+        return this.executeFetchUrl(toolCall);
+      case 'replace_multi':
+        return this.executeReplaceMulti(toolCall, cwd, sessionId);
+      case 'bash_background':
+        return this.executeBashBackground(toolCall, cwd);
+      case 'bash_status':
+        return this.executeBashStatus(toolCall);
       default:
         return {
           success: false,
@@ -412,7 +489,7 @@ export class ToolExecutor {
     sessionId: string
   ): Promise<ToolExecutionResult> {
     const { todoWriteTool, formatTodoResult } = await import('../tools/todo.js');
-    const args = toolCall.args as { todos: Array<{ id?: string; content: string; status: string }> };
+    const args = toolCall.args as { todos: Array<{ id?: string; content: string; status: "pending" | "in_progress" | "completed" | "cancelled" }> };
     const result = await todoWriteTool(args, sessionId, this.db);
     return {
       success: result.success,
@@ -464,5 +541,101 @@ export class ToolExecutor {
 
   getPermissionState(type: 'bash' | 'write' | 'edit'): boolean {
     return this.permissionState.get(type) || false;
+  }
+
+  private async executeFetchUrl(
+    toolCall: ToolCall
+  ): Promise<ToolExecutionResult> {
+    const { fetchUrlTool, formatFetchResult } = await import('../tools/fetch.js');
+    const args = toolCall.args as { url: string };
+    const result = await fetchUrlTool(args);
+    return {
+      success: result.success,
+      result: formatFetchResult(result),
+    };
+  }
+
+  private async executeReplaceMulti(
+    toolCall: ToolCall,
+    cwd: string,
+    sessionId: string
+  ): Promise<ToolExecutionResult> {
+    const { multiEditFileTool, applyMultiEditFile } = await import('../tools/edit.js');
+    const args = toolCall.args as { path: string; edits: Array<{ target: string; replacement: string }> };
+
+    // Check permission - we use 'edit' permission for replace_multi
+    const permission = await this.checkPermission('edit');
+    if (!permission.granted) {
+      return {
+        success: false,
+        result: permission.reason || 'Permission denied',
+        requiresPermission: true,
+        permissionGranted: false,
+      };
+    }
+
+    // Create git snapshot before editing
+    const { createGitSnapshot } = await import('../utils/git.js');
+    const existingContent = await createGitSnapshot(args.path, cwd);
+    if (existingContent) {
+      this.db.createSnapshot(sessionId, args.path, existingContent);
+    }
+
+    // Pre-calculate diff logic using tool
+    const toolResult = await multiEditFileTool(args, cwd);
+    if (!toolResult.success) {
+      return {
+         success: false,
+         result: toolResult.error || 'Failed to apply multiple edits',
+      }
+    }
+
+    // Apply the edit
+    const result = await applyMultiEditFile(args, cwd);
+    
+    // Invalidate cache for this file
+    const cache = getToolCache();
+    cache.invalidateFile(args.path);
+    
+    return {
+      success: result.success,
+      result: result.success ? `Successfully applied multiple replacements to ${args.path}\n\nDiff:\n${toolResult.diff}` : result.error || 'Failed to edit file',
+    };
+  }
+
+  private async executeBashBackground(
+    toolCall: ToolCall,
+    cwd: string
+  ): Promise<ToolExecutionResult> {
+    const { bashBackgroundTool } = await import('../tools/bash.js');
+    const args = toolCall.args as { command: string };
+
+    const permission = await this.checkPermission('bash');
+    if (!permission.granted) {
+      return {
+        success: false,
+        result: permission.reason || 'Permission denied',
+        requiresPermission: true,
+        permissionGranted: false,
+      };
+    }
+
+    const result = await bashBackgroundTool(args, cwd);
+    return {
+      success: result.success,
+      result: result.success ? `Started background process with ID: ${result.id}` : `Error: ${result.error}`,
+    };
+  }
+
+  private async executeBashStatus(
+    toolCall: ToolCall
+  ): Promise<ToolExecutionResult> {
+    const { bashStatusTool, formatBashResult } = await import('../tools/bash.js');
+    const args = toolCall.args as { id: string; action: 'read' | 'terminate' };
+    const result = await bashStatusTool(args);
+    return {
+      success: result.success,
+      result: formatBashResult(result),
+    };
   }
 }

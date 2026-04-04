@@ -5,6 +5,8 @@ import SessionDB from '../db/sessions.js';
 import { loadConfig, findAgentsFile, readAgentsFile } from '../config.js';
 import { getGitStatusString } from '../utils/git.js';
 import { platform } from 'os';
+import { resolveDirectoryHint } from '../tools/path.js';
+import { analyzeCodebase, isAnalysisIntent } from '../core/agent/analyze.js';
 
 export interface AgentOptions {
   sessionId: string;
@@ -55,6 +57,20 @@ export class Agent {
   }
 
   async initialize(): Promise<void> {
+    await this.refreshSystemPrompt();
+  }
+
+  async setCwd(nextCwd: string): Promise<void> {
+    this.cwd = nextCwd;
+    await this.db.updateSessionCwd(this.sessionId, nextCwd);
+    await this.refreshSystemPrompt();
+  }
+
+  getCwd(): string {
+    return this.cwd;
+  }
+
+  private async refreshSystemPrompt(): Promise<void> {
     const config = await loadConfig();
     this.toolExecutor = new ToolExecutor(this.db, config.permission);
 
@@ -78,11 +94,21 @@ export class Agent {
       content: userMessage,
     });
 
-    this.db.addMessage({
+    await this.db.addMessage({
       sessionId: this.sessionId,
       role: 'user',
       content: userMessage,
     });
+
+    const navigationResponse = await this.tryHandleNavigationIntent(userMessage);
+    if (navigationResponse) {
+      return navigationResponse;
+    }
+
+    const analysisResponse = await this.tryHandleAnalysisIntent(userMessage);
+    if (analysisResponse) {
+      return analysisResponse;
+    }
 
     let iterationCount = 0;
     const maxIterations = 20;
@@ -108,6 +134,9 @@ export class Agent {
 
       const toolCalls = this.parseToolCalls(response);
 
+      // Clean up tool call tags from the displayed content 
+      const cleanContent = this.stripToolCallContent(response);
+
       if (toolCalls.length > 0) {
         const toolResults: Array<{ toolCallId: string; result: string; isError?: boolean }> = [];
 
@@ -116,7 +145,7 @@ export class Agent {
 
           if (requiresPermission) {
             return {
-              content: response,
+              content: cleanContent,
               toolCalls,
               done: false,
             };
@@ -158,12 +187,15 @@ export class Agent {
         });
 
         const toolResultsContent = toolResults
-          .map((r) => `Tool ${r.toolCallId} result: ${r.result}`)
-          .join('\n');
+          .map((r) => `[TOOL RESULT for ${r.toolCallId}]\n${r.result}\n[END TOOL RESULT]`)
+          .join('\n\n');
+        
+        // Force model to acknowledge the ACTUAL real content above
+        const injectedContent = `The following are the REAL outputs from tools you just called. You MUST use this exact content in your response. Do NOT invent or paraphrase — show the actual content:\n\n${toolResultsContent}`;
 
         this.contextManager.addMessage({
           role: 'user',
-          content: toolResultsContent,
+          content: injectedContent,
         });
 
         continue;
@@ -174,7 +206,7 @@ export class Agent {
         content: response,
       });
 
-      this.db.addMessage({
+      await this.db.addMessage({
         sessionId: this.sessionId,
         role: 'assistant',
         content: response,
@@ -252,7 +284,7 @@ export class Agent {
     // Adjust tool calls based on error type
     if (toolCall.name === 'read_file') {
       const args = toolCall.args as { path: string; startLine?: number; endLine?: number };
-      
+
       // If file is too large, try reading first chunk
       if (error.includes('large') || error.includes('truncated')) {
         return {
@@ -260,7 +292,7 @@ export class Agent {
           args: { ...args, startLine: 1, endLine: 100 },
         };
       }
-      
+
       // If file not found, try without path prefix
       if (error.includes('not found')) {
         const newPath = args.path.replace(/^\.?\//, '');
@@ -273,7 +305,7 @@ export class Agent {
 
     if (toolCall.name === 'grep') {
       const args = toolCall.args as { pattern: string; path?: string };
-      
+
       // If no results, try case-insensitive
       if (error.includes('No matches') || args.pattern.includes('case')) {
         return {
@@ -296,7 +328,7 @@ export class Agent {
 
     this.contextManager.addMessage({
       role: 'user',
-      content: `Tool ${toolCall.name} result: ${result.result}`,
+      content: `[TOOL RESULT for ${toolCall.name}]\n${result.result}\n[END TOOL RESULT]\n\nAbove is the REAL output from ${toolCall.name}. Use this EXACT content.`,
     });
 
     return {
@@ -305,8 +337,164 @@ export class Agent {
     };
   }
 
+  /**
+   * Called after the UI executes permission-gated tools.
+   * Resumes the agent loop so it can process the tool results and give a proper response.
+   */
+  async continueAfterPermission(): Promise<AgentResponse> {
+    let iterationCount = 0;
+    const maxIterations = 15;
+
+    while (iterationCount < maxIterations) {
+      iterationCount++;
+
+      if (this.contextManager.shouldCompress()) {
+        this.contextManager.compress();
+      }
+
+      const response = await this.callLLM();
+
+      if (!response) {
+        return { content: 'Error: Failed to get response from LLM', done: true };
+      }
+
+      const toolCalls = this.parseToolCalls(response);
+      const cleanContent = this.stripToolCallContent(response);
+
+      if (toolCalls.length > 0) {
+        // If the resumed loop needs permission again, surface it back to the UI
+        const requiresPermission = toolCalls.some((tc) =>
+          ['bash', 'write_file', 'edit_file'].includes(tc.name)
+        );
+
+        if (requiresPermission) {
+          this.contextManager.addMessage({ role: 'assistant', content: response, toolCalls });
+          return { content: cleanContent, toolCalls, done: false };
+        }
+
+        // Execute non-permission tools automatically
+        const toolResults: Array<{ toolCallId: string; result: string; isError?: boolean }> = [];
+        for (const toolCall of toolCalls) {
+          const result = await this.executeToolWithFallback(toolCall, 0);
+          toolResults.push({ toolCallId: toolCall.id, result: result.result, isError: !result.success });
+        }
+
+        const toolResultsContent = toolResults
+          .map((r) => `[TOOL RESULT for ${r.toolCallId}]\n${r.result}\n[END TOOL RESULT]`)
+          .join('\n\n');
+        
+        const injectedContent = `The following are the REAL outputs from tools you just called. You MUST use this exact content in your response. Do NOT invent or paraphrase — show the actual content:\n\n${toolResultsContent}`;
+
+        this.contextManager.addMessage({ role: 'assistant', content: response, toolCalls });
+        this.contextManager.addMessage({
+          role: 'user',
+          content: injectedContent,
+        });
+
+        continue;
+      }
+
+      // No more tools — agent is done
+      this.contextManager.addMessage({ role: 'assistant', content: response });
+      await this.db.addMessage({ sessionId: this.sessionId, role: 'assistant', content: response });
+
+      return { content: response, done: true };
+    }
+
+    return { content: 'Error: Maximum iterations reached', done: true };
+  }
+
   grantPermission(type: 'bash' | 'write' | 'edit', always: boolean = false): void {
     this.toolExecutor.grantPermission(type, always);
+  }
+
+  private async tryHandleNavigationIntent(userMessage: string): Promise<AgentResponse | null> {
+    const hint = this.extractDirectoryHint(userMessage);
+    if (!hint) {
+      return null;
+    }
+
+    const resolution = resolveDirectoryHint(this.cwd, hint);
+
+    if (resolution.matches.length === 1) {
+      const nextCwd = resolution.matches[0];
+      await this.setCwd(nextCwd);
+
+      const response = `Switched workspace to ${nextCwd}\nI can analyze this codebase, inspect files, or make changes here now.`;
+      this.contextManager.addMessage({ role: 'assistant', content: response });
+      await this.db.addMessage({
+        sessionId: this.sessionId,
+        role: 'assistant',
+        content: response,
+      });
+
+      return {
+        content: response,
+        done: true,
+      };
+    }
+
+    if (resolution.matches.length > 1) {
+      const response = `I found multiple matching directories:\n${resolution.matches.map((match) => `- ${match}`).join('\n')}\nTell me which one to use.`;
+      this.contextManager.addMessage({ role: 'assistant', content: response });
+      await this.db.addMessage({
+        sessionId: this.sessionId,
+        role: 'assistant',
+        content: response,
+      });
+
+      return {
+        content: response,
+        done: true,
+      };
+    }
+
+    const response = `I couldn't find that directory from the current workspace.\nTried:\n${resolution.attempted.slice(0, 5).map((path) => `- ${path}`).join('\n')}`;
+    this.contextManager.addMessage({ role: 'assistant', content: response });
+    await this.db.addMessage({
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: response,
+    });
+
+    return {
+      content: response,
+      done: true,
+    };
+  }
+
+  private async tryHandleAnalysisIntent(userMessage: string): Promise<AgentResponse | null> {
+    if (!isAnalysisIntent(userMessage)) {
+      return null;
+    }
+
+    const response = await analyzeCodebase(this.cwd);
+    this.contextManager.addMessage({ role: 'assistant', content: response });
+    await this.db.addMessage({
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: response,
+    });
+
+    return {
+      content: response,
+      done: true,
+    };
+  }
+
+  private extractDirectoryHint(userMessage: string): string | null {
+    const trimmed = userMessage.trim();
+    const navigationMatch = trimmed.match(/(?:^|\b)(?:go to|switch to|move to|open|enter|use)\s+(.+?)(?:\s+(?:dir|directory|folder))?$/i);
+    if (navigationMatch) {
+      return navigationMatch[1].trim();
+    }
+
+    const pathLikeMatch = trimmed.match(/^([A-Za-z]:\\[^\s]+|~?[\\/][^\s]+|[\w.-]+[\\/][^\s]+)(?:\s+.*)?$/);
+    if (pathLikeMatch) {
+      return pathLikeMatch[1].trim();
+    }
+
+    return null;
   }
 
   private async callLLM(): Promise<string | null> {
@@ -315,52 +503,34 @@ export class Agent {
     // Professional CLI agent system prompt
     const systemPrompt = `You are Kode, a professional AI coding agent for the terminal.
 
-OUTPUT FORMAT RULES:
+CRITICAL TOOL RULES:
+1. TOOL PRIORITY: Always prefer built-in tools over bash.
+   - list_dir → explore directories (NEVER use bash ls, find, dir)
+   - read_file → read file contents (NEVER use bash cat, type)
+   - grep → search code (NEVER use bash grep, findstr)
+   - bash → ONLY for: builds, tests, git, npm/yarn installs, running scripts
+2. WINDOWS: If platform is 'win32', use PowerShell syntax (Get-ChildItem NOT ls) for bash commands.
+3. CD: NEVER use 'cd' in bash — use absolute paths.
+4. CODE: Always write COMPLETE well-formed code (e.g. HTML with DOCTYPE/head/body).
 
-1. NEVER show internal reasoning or <think> blocks
-2. Structure output into sections when applicable:
-
-━━━ PLAN ━━━
-- Bullet points of what will be done (max 5)
-
-━━━ ACTION ━━━
-⏳ [tool] action
-✓ [tool] completed
-✖ [tool] failed
-
-3. FILE OUTPUT:
-📄 path (lines)
-[show snippet or diff, not full content]
-
-4. DIFFS (always for file changes):
---- old
-+++ new
-+ added
-- removed
-
-5. Always ask before modifying:
-Apply this change? (y/n)
-
-6. Be concise:
-- Max 3-5 lines per explanation
-- No paragraphs or storytelling
-- No "Okay, let me..." filler
-
-7. Status indicators:
-⏳ running | ✓ success | ✖ error
-
-8. Tool call format:
-tool_call:{"name": "tool_name", "args": {...}}
+OUTPUT FORMAT:
+1. NEVER show <think> blocks.
+2. Structure: 
+   ━━━ PLAN ━━━ (max 5 points)
+   ━━━ ACTION ━━━ (⏳ action, ✓ completed, ✖ failed)
+3. FILE OUTPUT: Show FULL raw content in a code block if user asks to see it; else summarize.
+4. DIFFS for changes: --- old / +++ new / + added / - removed.
+5. Concise: No filler like "Okay, let me...".
+6. Tool call format: tool_call:{"name": "tool_name", "args": {...}}
 
 Environment: ${this.cwd} | ${process.platform}
-
 Respond professionally like a developer tool, not a chatbot.`;
 
     // Build messages array - Sarvam requires user message first
     const sarvamMessages: Array<{ role: string; content: string }> = [];
-    
+
     let baseSystemPrompt = '';
-    
+
     if (messages.length > 0 && messages[0].role === 'system') {
       baseSystemPrompt = messages[0].content;
     }
@@ -368,14 +538,14 @@ Respond professionally like a developer tool, not a chatbot.`;
     // Build alternating user/assistant messages
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      
+
       if (msg.role === 'system') {
         continue;
       }
-      
+
       if (msg.role === 'user') {
         const content = sarvamMessages.length === 0 && baseSystemPrompt
-          ? systemPrompt + '\n\n' + msg.content
+          ? baseSystemPrompt + '\n\n' + systemPrompt + '\n\n' + msg.content
           : msg.content;
         sarvamMessages.push({ role: 'user', content });
       } else if (msg.role === 'assistant') {
@@ -405,8 +575,14 @@ Respond professionally like a developer tool, not a chatbot.`;
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`LLM API error: ${response.status} ${errorText}`);
+        if (response.status === 403) {
+          console.error(`\n✖ Invalid API Key: Please check your SARVAM_API_KEY in ~/.kode/config.json or your environment variables.\nGet a new key at https://sarvam.ai\n`);
+        } else if (response.status === 404) {
+          console.error(`\n✖ Model Not Found: The model "${this.model}" is not available or you don't have access to it.\n`);
+        } else {
+          const errorText = await response.text();
+          console.error(`\n✖ LLM API error: ${response.status} ${errorText}\n`);
+        }
         return null;
       }
 
@@ -462,7 +638,7 @@ Respond professionally like a developer tool, not a chatbot.`;
     // Try multiple patterns to catch all variations
     const thinkBlockRegex = /<think>[\s\S]*?(?:<\/think>|<\/thought>|<\/thinking>)/gi;
     const thinkBlockRegex2 = /<think>[\s\S]*$/gi;
-    
+
     fullContent = fullContent.replace(thinkBlockRegex, '').trim();
     fullContent = fullContent.replace(thinkBlockRegex2, '').trim();
 
@@ -517,6 +693,37 @@ Respond professionally like a developer tool, not a chatbot.`;
       }
     }
 
+    // Pattern 3: XML-like format <tool_call>name <arg_key>...
+    const xmlToolPattern = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+    while ((match = xmlToolPattern.exec(content)) !== null) {
+      const toolBlock = match[1];
+      const toolNameMatch = toolBlock.match(/^([a-zA-Z0-9_\-]+)/);
+      if (toolNameMatch) {
+        const toolName = toolNameMatch[1].trim();
+        const args: Record<string, any> = {};
+
+        // Extract all key-value pairs
+        const argKeys = [...toolBlock.matchAll(/<arg_key>([\s\S]*?)<\/arg_key>/g)];
+        const argVals = [...toolBlock.matchAll(/<arg_value>([\s\S]*?)<\/arg_value>/g)];
+
+        for (let i = 0; i < Math.min(argKeys.length, argVals.length); i++) {
+          args[argKeys[i][1].trim()] = argVals[i][1].trim();
+        }
+
+        if (this.validateToolCall({ name: toolName, args })) {
+          const signature = `${toolName}:${JSON.stringify(args)}`;
+          if (!seenSignatures.has(signature)) {
+            seenSignatures.add(signature);
+            toolCalls.push({
+              id: `call_xml_${toolCalls.length}`,
+              name: toolName,
+              args: args,
+            });
+          }
+        }
+      }
+    }
+
     return toolCalls;
   }
 
@@ -537,10 +744,19 @@ Respond professionally like a developer tool, not a chatbot.`;
     return null;
   }
 
+  private stripToolCallContent(content: string): string {
+    return content
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+      .replace(/tool_call:\s*\{[\s\S]*?\}(?=\n|$)/g, '')
+      .replace(/\*\*TOOL CALL:\*\*[\s\S]*?(?=\n{2,}|\Z)/g, '')
+      .trim();
+  }
+
   private validateToolCall(call: { name: string; args: Record<string, unknown> }): boolean {
     const validTools = [
       'read_file', 'write_file', 'edit_file', 'bash',
-      'grep', 'list_dir', 'todo_write', 'todo_read'
+      'grep', 'list_dir', 'todo_write', 'todo_read',
+      'replace_multi', 'fetch_url', 'bash_background', 'bash_status'
     ];
 
     if (!call.name || !validTools.includes(call.name)) {
@@ -561,6 +777,10 @@ Respond professionally like a developer tool, not a chatbot.`;
       list_dir: [],
       todo_write: ['todos'],
       todo_read: [],
+      replace_multi: ['path', 'edits'],
+      fetch_url: ['url'],
+      bash_background: ['command'],
+      bash_status: ['id', 'action'],
     };
 
     const required = requiredArgs[call.name] || [];
@@ -575,6 +795,10 @@ Respond professionally like a developer tool, not a chatbot.`;
 
   getContextStatus() {
     return this.contextManager.getStatus();
+  }
+
+  setModel(model: string): void {
+    this.model = model;
   }
 
   getPlanner(): Planner {

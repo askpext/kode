@@ -1,17 +1,36 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import Spinner from 'ink-spinner';
+import SelectInput from 'ink-select-input';
 import { Chat, Message as ChatMessage } from './Chat.js';
 import { Input } from './Input.js';
 import { ToolCall, ToolStatus } from './ToolCall.js';
 import { TodoList, Todo } from './TodoList.js';
 import { DiffView } from './DiffView.js';
 import { PermissionPrompt } from './Permission.js';
-import { Agent, ToolCall as AgentToolCall } from '../agent/loop.js';
-import SessionDB, { Todo as DbTodo } from '../db/sessions.js';
+import { Agent } from '../agent/loop.js';
+import { ToolCall as AgentToolCall } from '../agent/tools.js';
+import SessionDB from '../db/sessions.js';
+import { saveGlobalModel } from '../config.js';
+import { isRegisteredSlashCommand } from '../core/commands/slash.js';
+import {
+  buildStatusLine,
+  executeSlashCommand,
+  loadSessionViewData,
+  loadTodos,
+} from '../core/session/controller.js';
+import {
+  buildPermissionPlan,
+  buildResumePlan,
+  createToolExecutionPlan,
+  executeToolCalls,
+  requiresPermission,
+  ToolExecutionState,
+} from '../core/session/executor.js';
 
 interface AppState {
-  mode: 'input' | 'thinking' | 'tool_pending' | 'permission' | 'diff';
+  mode: 'input' | 'thinking' | 'tool_pending' | 'permission' | 'diff' | 'model_selection';
+  currentModel: string;
   messages: ChatMessage[];
   currentToolCalls: Array<{
     call: AgentToolCall;
@@ -49,6 +68,7 @@ interface AppProps {
 export function App({ agent, db, sessionId, cwd, model, onExit }: AppProps) {
   const [state, setState] = useState<AppState>({
     mode: 'input',
+    currentModel: model,
     messages: [],
     currentToolCalls: [],
     todos: [],
@@ -65,29 +85,13 @@ export function App({ agent, db, sessionId, cwd, model, onExit }: AppProps) {
   // Load initial state
   useEffect(() => {
     const loadInitialState = async () => {
-      // Load messages from DB
-      const messages = await db.getMessages(sessionId);
-      const chatMessages: ChatMessage[] = messages.map((m) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-        toolCalls: m.toolCalls,
-      }));
-
-      // Load todos
-      const todos = (await db.getTodos(sessionId)).map((t) => ({
-        id: t.id,
-        content: t.content,
-        status: t.status,
-      }));
-
-      // Get context status
-      const status = agent.getContextStatus();
+      const viewData = await loadSessionViewData(db, sessionId, agent, model);
 
       setState((prev) => ({
         ...prev,
-        messages: chatMessages,
-        todos,
-        statusLine: `${model} | ${status.currentTokens}/${status.maxTokens} tokens | Session: ${sessionId.slice(0, 8)}`,
+        messages: viewData.messages,
+        todos: viewData.todos,
+        statusLine: viewData.statusLine,
       }));
     };
 
@@ -97,6 +101,25 @@ export function App({ agent, db, sessionId, cwd, model, onExit }: AppProps) {
   // Handle slash commands
   const handleSlashCommand = useCallback(
     async (command: string) => {
+      const result = await executeSlashCommand(command, db, sessionId);
+
+      if (result.exit) {
+        onExit();
+        return;
+      }
+
+      setState((prev) => ({
+        ...prev,
+        mode: result.mode || prev.mode,
+        messages: result.clearMessages
+          ? []
+          : result.message
+            ? [...prev.messages, result.message]
+            : prev.messages,
+      }));
+      return;
+      /*
+
       const parts = command.split(' ');
       const cmd = parts[0].toLowerCase();
       const args = parts.slice(1).join(' ');
@@ -154,13 +177,7 @@ export function App({ agent, db, sessionId, cwd, model, onExit }: AppProps) {
         case 'model':
           setState((prev) => ({
             ...prev,
-            messages: [
-              ...prev.messages,
-              {
-                role: 'assistant',
-                content: `Model: ${model}\nBase URL: https://api.sarvam.ai/v1`,
-              },
-            ],
+            mode: 'model_selection',
           }));
           break;
 
@@ -184,7 +201,7 @@ Note: sarvam-m LLM is FREE.`,
           break;
 
         case 'undo':
-          const snapshot = db.getLatestSnapshotOverall(sessionId);
+          const snapshot = await db.getLatestSnapshotOverall(sessionId);
           if (!snapshot) {
             setState((prev) => ({
               ...prev,
@@ -286,14 +303,15 @@ Note: sarvam-m LLM is FREE.`,
             ],
           }));
       }
+      */
     },
-    [db, sessionId, model, onExit]
+    [db, sessionId, onExit]
   );
 
   // Handle user input
   const handleSubmit = useCallback(
     async (value: string) => {
-      if (value.startsWith('/')) {
+      if (isRegisteredSlashCommand(value)) {
         await handleSlashCommand(value.slice(1));
         return;
       }
@@ -322,76 +340,26 @@ Note: sarvam-m LLM is FREE.`,
 
         if (response.toolCalls && response.toolCalls.length > 0) {
           // Handle tool calls that need permission
-          const toolCallStates = response.toolCalls.map((call) => ({
-            call,
-            status: 'pending' as ToolStatus,
-          }));
+          const toolCallStates = createToolExecutionPlan(response.toolCalls).currentToolCalls as Array<{
+            call: AgentToolCall;
+            status: ToolStatus;
+            result?: string;
+            error?: string;
+          }>;
 
           // Check if any tool needs permission
-          const needsPermission = response.toolCalls.some((call) =>
-            ['bash', 'write_file', 'edit_file'].includes(call.name)
-          );
+          const needsPermission = response.toolCalls.some((call) => requiresPermission(call.name));
 
           if (needsPermission) {
-            const pendingCall = response.toolCalls.find((call) =>
-              ['bash', 'write_file', 'edit_file'].includes(call.name)
-            );
-
-            if (pendingCall) {
-              let permissionType: 'bash' | 'write' | 'edit' = 'bash';
-              let command: string | undefined;
-              let filePath: string | undefined;
-              let diff: string | undefined;
-
-              if (pendingCall.name === 'bash') {
-                permissionType = 'bash';
-                command = (pendingCall.args as { command?: string }).command;
-              } else if (pendingCall.name === 'write_file') {
-                permissionType = 'write';
-                filePath = (pendingCall.args as { path?: string }).path;
-                // Get diff preview
-                const preview = await agent.previewTool(pendingCall);
-                if (preview.diff) {
-                  diff = preview.diff;
-                }
-              } else if (pendingCall.name === 'edit_file') {
-                permissionType = 'edit';
-                filePath = (pendingCall.args as { path?: string }).path;
-                // Get diff preview
-                const preview = await agent.previewTool(pendingCall);
-                if (preview.diff) {
-                  diff = preview.diff;
-                }
-              }
-
-              if (diff) {
-                // Show diff first, then permission prompt
-                setState((prev) => ({
-                  ...prev,
-                  mode: 'diff',
-                  currentToolCalls: toolCallStates,
-                  pendingDiff: {
-                    filePath: filePath || '',
-                    diff,
-                    toolCall: pendingCall,
-                  },
-                }));
-              } else {
-                // No diff available, show permission prompt directly
-                setState((prev) => ({
-                  ...prev,
-                  mode: 'permission',
-                  currentToolCalls: toolCallStates,
-                  pendingPermission: {
-                    type: permissionType,
-                    toolCall: pendingCall,
-                    command,
-                    filePath,
-                  },
-                }));
-              }
-              return;
-            }
+            const permissionPlan = await buildPermissionPlan(agent, response.toolCalls);
+            setState((prev) => ({
+              ...prev,
+              mode: permissionPlan.pendingDiff ? 'diff' : 'permission',
+              currentToolCalls: permissionPlan.currentToolCalls as typeof prev.currentToolCalls,
+              pendingDiff: permissionPlan.pendingDiff,
+              pendingPermission: permissionPlan.pendingPermission || null,
+            }));
+            return;
           }
 
           // Execute tools without permission
@@ -400,37 +368,19 @@ Note: sarvam-m LLM is FREE.`,
             currentToolCalls: toolCallStates,
           }));
 
-          for (const toolCall of response.toolCalls) {
-            setState((prev) => ({
-              ...prev,
-              currentToolCalls: prev.currentToolCalls.map((tc) =>
-                tc.call.id === toolCall.id ? { ...tc, status: 'running' } : tc
-              ),
-            }));
-
-            const result = await agent.executeToolWithPermission(toolCall);
-
-            setState((prev) => ({
-              ...prev,
-              currentToolCalls: prev.currentToolCalls.map((tc) =>
-                tc.call.id === toolCall.id
-                  ? {
-                      ...tc,
-                      status: result.success ? 'done' : 'error',
-                      result: result.result,
-                      error: result.success ? undefined : result.result,
-                    }
-                  : tc
-              ),
-            }));
-          }
+          await executeToolCalls(
+            agent,
+            toolCallStates as ToolExecutionState[],
+            (updatedStates) => {
+              setState((prev) => ({
+                ...prev,
+                currentToolCalls: updatedStates as typeof prev.currentToolCalls,
+              }));
+            }
+          );
 
           // Reload todos after tool execution
-          const todos = (await db.getTodos(sessionId)).map((t: DbTodo) => ({
-            id: t.id,
-            content: t.content,
-            status: t.status,
-          }));
+          const todos = await loadTodos(db, sessionId);
 
           // Calculate response time
           const responseTime = state.startTime ? ((Date.now() - state.startTime) / 1000).toFixed(1) : '0';
@@ -443,7 +393,7 @@ Note: sarvam-m LLM is FREE.`,
             todos,
             currentToolCalls: [],
             startTime: null,
-            statusLine: `${model} | ${responseTime}s | Session: ${sessionId.slice(0, 8)}`,
+            statusLine: buildStatusLine(prev.currentModel || model, `${responseTime}s`, agent.getCwd(), sessionId),
           }));
         } else {
           // No tool calls - just show response
@@ -455,7 +405,7 @@ Note: sarvam-m LLM is FREE.`,
             mode: 'input',
             messages: [...prev.messages, { role: 'assistant', content: response.content }],
             startTime: null,
-            statusLine: `${model} | ${responseTime}s | Session: ${sessionId.slice(0, 8)}`,
+            statusLine: buildStatusLine(prev.currentModel || model, `${responseTime}s`, agent.getCwd(), sessionId),
           }));
         }
       } catch (error) {
@@ -475,7 +425,6 @@ Note: sarvam-m LLM is FREE.`,
     (confirm: boolean, always: boolean) => {
       if (!state.pendingPermission) return;
 
-      // Capture current state before modifying
       const currentPendingPermission = state.pendingPermission;
       const currentToolCalls = [...state.currentToolCalls];
 
@@ -484,8 +433,8 @@ Note: sarvam-m LLM is FREE.`,
           agent.grantPermission(currentPendingPermission.type, true);
         }
 
-        // Execute all pending tools
         (async () => {
+          // Show "running" state while executing tools
           setState((prev) => ({
             ...prev,
             mode: 'thinking',
@@ -497,39 +446,46 @@ Note: sarvam-m LLM is FREE.`,
             pendingPermission: null,
           }));
 
-          // Execute all tool calls in sequence
-          for (const tc of currentToolCalls) {
-            const result = await agent.executeToolWithPermission(tc.call);
+          await executeToolCalls(
+            agent,
+            currentToolCalls as ToolExecutionState[],
+            (updatedStates) => {
+              setState((prev) => ({
+                ...prev,
+                currentToolCalls: updatedStates as typeof prev.currentToolCalls,
+              }));
+            }
+          );
 
+          // ✅ KEY FIX: Resume the agent loop so it can process tool results
+          // and give a real response instead of a hardcoded message
+          const agentResponse = await agent.continueAfterPermission();
+
+          // Reload todos
+          const todos = await loadTodos(db, sessionId);
+
+          // Check if the resumed loop needs another permission
+          const resumePlan = await buildResumePlan(agent, agentResponse);
+          if (resumePlan) {
             setState((prev) => ({
               ...prev,
-              currentToolCalls: currentToolCalls.map((item) =>
-                item.call.id === tc.call.id
-                  ? {
-                      ...item,
-                      status: result.success ? 'done' : 'error',
-                      result: result.result,
-                      error: result.success ? undefined : result.result,
-                    }
-                  : item
-              ),
+              mode: resumePlan.pendingDiff ? 'diff' : 'permission',
+              todos,
+              currentToolCalls: resumePlan.currentToolCalls as typeof prev.currentToolCalls,
+              pendingDiff: resumePlan.pendingDiff,
+              pendingPermission: resumePlan.pendingPermission || null,
             }));
+            return;
           }
 
-          // Reload todos after tool execution
-          const todos = (await db.getTodos(sessionId)).map((t: DbTodo) => ({
-            id: t.id,
-            content: t.content,
-            status: t.status,
-          }));
-
-          // Add assistant message with response
+          // Done — show the real agent response
           setState((prev) => ({
             ...prev,
             mode: 'input',
-            messages: [...prev.messages, { role: 'assistant', content: 'Files written successfully.' }],
+            messages: [...prev.messages, { role: 'assistant', content: agentResponse.content }],
             todos,
             currentToolCalls: [],
+            statusLine: buildStatusLine(prev.currentModel || model, 'ready', agent.getCwd(), sessionId),
           }));
         })();
       } else {
@@ -588,38 +544,63 @@ Note: sarvam-m LLM is FREE.`,
       {/* Main content area */}
       <Box flexDirection="column" flexGrow={1}>
         {/* Header - Always visible */}
-        <Box flexDirection="column" alignItems="center" paddingY={1} borderBottom={1} borderColor="gray">
+        <Box flexDirection="column" alignItems="center" paddingY={1} borderBottom={true} borderColor="gray">
           {state.messages.length === 0 ? (
             // Big homepage header
             <Box flexDirection="column" alignItems="center">
               <Box>
                 <Text bold color="green">
-                  ███╗   ███╗
+                  {`              ██`}
                 </Text>
               </Box>
               <Box>
                 <Text bold color="green">
-                  ████╗ ████║
+                  {`                ██`}
                 </Text>
               </Box>
               <Box>
                 <Text bold color="green">
-                  ██╔████╔██║
+                  {`                  ██`}
                 </Text>
               </Box>
               <Box>
                 <Text bold color="green">
-                  ██║╚██╔╝██║
+                  {`                    ██`}
                 </Text>
               </Box>
               <Box>
                 <Text bold color="green">
-                  ██║ ╚═╝ ██║
+                  {`██████████████████████████████████████`}
                 </Text>
               </Box>
               <Box>
                 <Text bold color="green">
-                  ╚═╝     ╚═╝
+                  {`      ██            ██      ████████`}
+                </Text>
+              </Box>
+              <Box>
+                <Text bold color="green">
+                  {`  ██████████        ██      ██      `}
+                </Text>
+              </Box>
+              <Box>
+                <Text bold color="green">
+                  {`██    ██    ██      ██      ████████`}
+                </Text>
+              </Box>
+              <Box>
+                <Text bold color="green">
+                  {`██    ██    ██      ██            ██`}
+                </Text>
+              </Box>
+              <Box>
+                <Text bold color="green">
+                  {`  ██████    ██      ██      ████████`}
+                </Text>
+              </Box>
+              <Box>
+                <Text bold color="green">
+                  {`      ██            ██              `}
                 </Text>
               </Box>
               <Box marginTop={1}>
@@ -638,32 +619,7 @@ Note: sarvam-m LLM is FREE.`,
                 </Text>
               </Box>
             </Box>
-          ) : (
-            // Compact header during chat
-            <Box>
-              <Text bold color="green">
-                कोड
-              </Text>
-              <Text dimColor>
-                {' '}|{' '}
-              </Text>
-              <Text bold color="cyan">
-                Kode
-              </Text>
-              <Text dimColor>
-                {' '}|{' '}
-              </Text>
-              <Text dimColor>
-                {model}
-              </Text>
-              <Text dimColor>
-                {' '}| Session: {' '}
-              </Text>
-              <Text color="yellow">
-                {sessionId.slice(0, 6)}
-              </Text>
-            </Box>
-          )}
+          ) : null}
         </Box>
 
         {/* Main chat/content area */}
@@ -674,7 +630,7 @@ Note: sarvam-m LLM is FREE.`,
               {/* Welcome info - Show only if no messages */}
               {state.messages.length === 0 && state.mode === 'input' && (
                 <Box flexDirection="column" alignItems="center" justifyContent="center" flexGrow={1}>
-                  <Box borderTop={1} borderBottom={1} borderColor="gray" paddingY={1} marginBottom={2}>
+                  <Box borderTop={true} borderBottom={true} borderColor="gray" paddingY={1} marginBottom={2}>
                     <Text dimColor>
                       Type your request or use a command
                     </Text>
@@ -759,6 +715,45 @@ Note: sarvam-m LLM is FREE.`,
             )}
           </Box>
 
+          {/* Status line */}
+          <Box borderStyle="single" borderTop={true} borderBottom={false} borderLeft={false} borderRight={false} borderColor="gray" paddingY={0} marginTop={1} flexDirection="row">
+            <Text bold color="green"> kode </Text>
+            <Text color="gray">│ </Text>
+            <Text color="cyan">{state.statusLine}</Text>
+          </Box>
+
+          {/* Model Selection UI */}
+          {state.mode === 'model_selection' && (
+            <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
+              <Text bold color="cyan">Select Model (Arrows to move, Enter to select):</Text>
+              <SelectInput
+                items={[
+                  { label: 'Sarvam 30B (Recommended)', value: 'sarvam-30b' },
+                  { label: 'Sarvam 105B (Advanced)', value: 'sarvam-105b' },
+                  { label: 'Sarvam M (Legacy)', value: 'sarvam-m' },
+                ]}
+                onSelect={(item) => {
+                  saveGlobalModel(item.value);
+                  agent.setModel(item.value);
+                  setState(prev => {
+                    const statusParts = prev.statusLine.split(' | ');
+                    const newStatusLine = `${item.value} | ${statusParts[1] || ''} | ${statusParts[2] || ''}`;
+                    return {
+                      ...prev,
+                      currentModel: item.value,
+                      mode: 'input',
+                      statusLine: newStatusLine,
+                      messages: [
+                        ...prev.messages,
+                        { role: 'assistant', content: `✓ Model successfully changed to ${item.value} and saved as default.` }
+                      ]
+                    };
+                  });
+                }}
+              />
+            </Box>
+          )}
+
           {/* Input area and prompts - below chat */}
           {state.mode === 'input' && (
             <Input
@@ -819,10 +814,7 @@ Note: sarvam-m LLM is FREE.`,
         </Box>
       </Box>
 
-      {/* Status line */}
-      <Box borderTop={1} borderColor="gray" paddingTop={1}>
-        <Text dimColor>{state.statusLine}</Text>
-      </Box>
+
     </Box>
   );
 }

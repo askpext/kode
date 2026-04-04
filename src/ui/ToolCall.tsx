@@ -111,6 +111,20 @@ export function ToolCall({ name, args, status, result, error }: ToolCallProps) {
   const color = getStatusColor(status);
   const icon = getStatusIcon(status);
 
+  // Determine if we should show output and how much
+  const shouldShowResult = status === 'done' && result && result.trim().length > 0;
+  const shouldShowError = status === 'error' && error;
+
+  // Truncate very long output to avoid flooding the screen
+  const MAX_OUTPUT_LINES = 40;
+  const getDisplayedResult = (text: string) => {
+    const lines = text.split('\n');
+    if (lines.length > MAX_OUTPUT_LINES) {
+      return lines.slice(0, MAX_OUTPUT_LINES).join('\n') + `\n... (${lines.length - MAX_OUTPUT_LINES} more lines)`;
+    }
+    return text;
+  };
+
   return (
     <Box flexDirection="column" marginY={0}>
       <Box>
@@ -144,15 +158,33 @@ export function ToolCall({ name, args, status, result, error }: ToolCallProps) {
             <Text color={color}>
               {progressMsg}
             </Text>
-            {error && (
-              <Text color={color} dimColor>
-                {' '}
-                - {error}
-              </Text>
-            )}
           </>
         )}
       </Box>
+
+      {/* Show tool output below the status line */}
+      {shouldShowResult && (
+        <Box
+          flexDirection="column"
+          marginLeft={2}
+          marginTop={0}
+          marginBottom={1}
+          borderStyle="round"
+          borderColor="gray"
+          paddingX={1}
+        >
+          <Text dimColor>{getDisplayedResult(result!)}</Text>
+        </Box>
+      )}
+
+      {/* Show error details */}
+      {shouldShowError && (
+        <Box marginLeft={2} marginTop={0}>
+          <Text color="red" dimColor>
+            {error}
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }

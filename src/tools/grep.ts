@@ -2,6 +2,7 @@ import { execa } from 'execa';
 import { glob } from 'glob';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
+import { resolveFlexiblePath } from './path.js';
 
 export interface GrepArgs {
   pattern: string;
@@ -28,7 +29,7 @@ const DEFAULT_MAX_RESULTS = 50;
 
 export async function grepTool(args: GrepArgs, cwd: string): Promise<GrepResult> {
   const maxResults = args.maxResults || DEFAULT_MAX_RESULTS;
-  const searchPath = args.path || cwd;
+  const searchPath = args.path ? resolveFlexiblePath(cwd, args.path) : cwd;
 
   // Try ripgrep first
   try {
@@ -88,7 +89,7 @@ export async function grepTool(args: GrepArgs, cwd: string): Promise<GrepResult>
 }
 
 async function grepWithNode(args: GrepArgs, cwd: string, maxResults: number): Promise<GrepResult> {
-  const searchPath = args.path || cwd;
+  const searchPath = args.path ? resolveFlexiblePath(cwd, args.path) : cwd;
   const pattern = args.include || '**/*.{ts,tsx,js,jsx,py,rs,go,java,c,cpp,h,hpp,md,json,yaml,yml,txt}';
 
   try {
@@ -108,7 +109,7 @@ async function grepWithNode(args: GrepArgs, cwd: string, maxResults: number): Pr
 
     for (const file of files) {
       try {
-        const content = await readFile(join(cwd, file), 'utf-8');
+        const content = await readFile(join(searchPath, file), 'utf-8');
         const lines = content.split('\n');
 
         for (let i = 0; i < lines.length; i++) {

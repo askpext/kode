@@ -1,7 +1,7 @@
-import { readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { createTwoFilesPatch } from 'diff';
+import { getParentDirectory, resolveWorkspacePath } from './path.js';
 
 export interface WriteFileArgs {
   path: string;
@@ -25,17 +25,16 @@ export async function generateDiff(filePath: string, oldContent: string, newCont
     'modified'
   );
 
-  // Colorize the diff
   const lines = patch.split('\n');
   const coloredLines = lines.map((line) => {
     if (line.startsWith('+') && !line.startsWith('+++')) {
-      return `\u001b[32m${line}\u001b[0m`; // Green for additions
+      return `\u001b[32m${line}\u001b[0m`;
     }
     if (line.startsWith('-') && !line.startsWith('---')) {
-      return `\u001b[31m${line}\u001b[0m`; // Red for deletions
+      return `\u001b[31m${line}\u001b[0m`;
     }
     if (line.startsWith('@@')) {
-      return `\u001b[36m${line}\u001b[0m`; // Cyan for hunk headers
+      return `\u001b[36m${line}\u001b[0m`;
     }
     return line;
   });
@@ -44,22 +43,20 @@ export async function generateDiff(filePath: string, oldContent: string, newCont
 }
 
 export async function writeFileTool(args: WriteFileArgs, cwd: string): Promise<WriteFileResult> {
-  const filePath = join(cwd, args.path);
-
   try {
-    // Read existing content if file exists
+    const { absolutePath, displayPath } = resolveWorkspacePath(cwd, args.path);
+
     let oldContent = '';
-    if (existsSync(filePath)) {
-      oldContent = await readFile(filePath, 'utf-8');
+    if (existsSync(absolutePath)) {
+      oldContent = await readFile(absolutePath, 'utf-8');
     }
 
-    // Generate diff
-    const diff = await generateDiff(args.path, oldContent, args.content);
+    const diff = await generateDiff(displayPath, oldContent, args.content);
 
     return {
       success: true,
       diff,
-      filePath: args.path,
+      filePath: displayPath,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error preparing file write';
@@ -71,16 +68,10 @@ export async function writeFileTool(args: WriteFileArgs, cwd: string): Promise<W
 }
 
 export async function applyWriteFile(args: WriteFileArgs, cwd: string): Promise<{ success: boolean; error?: string }> {
-  const filePath = join(cwd, args.path);
-
   try {
-    // Ensure directory exists
-    const { mkdir } = await import('fs/promises');
-    const dir = join(filePath, '..');
-    await mkdir(dir, { recursive: true });
-
-    // Write the file
-    await writeFile(filePath, args.content, 'utf-8');
+    const { absolutePath } = resolveWorkspacePath(cwd, args.path);
+    await mkdir(getParentDirectory(absolutePath), { recursive: true });
+    await writeFile(absolutePath, args.content, 'utf-8');
 
     return { success: true };
   } catch (error) {

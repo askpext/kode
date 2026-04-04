@@ -238,6 +238,15 @@ class SessionDB {
     this.save();
   }
 
+  async updateSessionCwd(id: string, cwd: string): Promise<void> {
+    await this.ensureInit();
+    if (!this.db) throw new Error('Database not initialized');
+
+    const now = new Date().toISOString();
+    this.db.run('UPDATE sessions SET cwd = ?, updated_at = ? WHERE id = ?', [cwd, now, id]);
+    this.save();
+  }
+
   async deleteSession(id: string): Promise<void> {
     await this.ensureInit();
     if (!this.db) throw new Error('Database not initialized');
@@ -267,6 +276,7 @@ class SessionDB {
       ]
     );
     this.save();
+    await this.updateSession(message.sessionId);
 
     return { ...message, id, createdAt: now };
   }
@@ -335,7 +345,7 @@ class SessionDB {
     }
 
     this.save();
-    this.updateSession(sessionId);
+    await this.updateSession(sessionId);
 
     return result;
   }
@@ -371,7 +381,7 @@ class SessionDB {
       [status, now, sessionId, todoId]
     );
     this.save();
-    this.updateSession(sessionId);
+    await this.updateSession(sessionId);
   }
 
   // Git snapshot operations
