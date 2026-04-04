@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./dist/cli.js",
   "bin": {
-    "kode": "./dist/cli.js"
+    "kode": "dist/cli.js"
   },
   "files": [
     "dist",
