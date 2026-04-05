@@ -711,4 +711,74 @@ describe('Agent workspace flow', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('keeps ambiguous deterministic file requests out of the llm loop', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-file-fallback-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const llmSpy = vi.spyOn(agent as unknown as { callLLM: () => Promise<string | null> }, 'callLLM');
+      const response = await agent.run('read file?');
+
+      expect(response.done).toBe(true);
+      expect(response.content).toContain('deterministic file mode');
+      expect(llmSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps ambiguous deterministic task requests out of the llm loop', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-task-fallback-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const llmSpy = vi.spyOn(agent as unknown as { callLLM: () => Promise<string | null> }, 'callLLM');
+      const response = await agent.run('run something');
+
+      expect(response.done).toBe(true);
+      expect(response.content).toContain('deterministic task mode');
+      expect(llmSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -178,9 +178,11 @@ export class Agent {
       return analysisResponse;
     }
 
-    const deterministicFallbackResponse = await this.tryHandleDeterministicFallback(userMessage);
-    if (deterministicFallbackResponse) {
-      return deterministicFallbackResponse;
+    if (!this.shouldUseOpenEndedLoop(userMessage)) {
+      const deterministicFallbackResponse = await this.tryHandleDeterministicFallback(userMessage);
+      if (deterministicFallbackResponse) {
+        return deterministicFallbackResponse;
+      }
     }
 
     let iterationCount = 0;
@@ -671,6 +673,10 @@ export class Agent {
       content: response,
       done: true,
     };
+  }
+
+  private shouldUseOpenEndedLoop(userMessage: string): boolean {
+    return this.classifyDeterministicDomain(userMessage) === null;
   }
 
   private async tryHandleFailureFollowup(userMessage: string): Promise<AgentResponse | null> {
@@ -1251,7 +1257,7 @@ Respond professionally like a developer tool, not a chatbot.`;
     }
 
     const path = match[1].trim().replace(/^["']|["']$/g, '');
-    if (!path || /\b(codebase|repo|project)\b/i.test(path)) {
+    if (!path || /^(file|a file|the file)$/i.test(path) || /\b(codebase|repo|project)\b/i.test(path)) {
       return null;
     }
 
