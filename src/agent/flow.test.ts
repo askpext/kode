@@ -208,4 +208,48 @@ describe('Agent workspace flow', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('routes xml-style write tool calls into permission flow without leaking raw tool markup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-write-tool-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      vi.spyOn(agent as unknown as { callLLM: () => Promise<string | null> }, 'callLLM')
+        .mockResolvedValueOnce(`I'll create it now.
+<tool_call>write_file
+<arg_key>path</arg_key>
+<arg_value>${join(kodeDir, 'index.html')}</arg_value>
+<arg_key>content</arg_key>
+<arg_value><!DOCTYPE html>
+<html><body>Hello</body></html>`);
+
+      const response = await agent.run('make a portfolio');
+
+      expect(response.done).toBe(false);
+      expect(response.toolCalls?.[0].name).toBe('write_file');
+      expect(response.content).not.toContain('<tool_call>');
+      expect(response.content).toContain("I'll create it now.");
+    } finally {
+      vi.restoreAllMocks();
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -815,21 +815,13 @@ Respond professionally like a developer tool, not a chatbot.`;
     }
 
     // Pattern 3: XML-like format <tool_call>name <arg_key>...
-    const xmlToolPattern = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+    const xmlToolPattern = /<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/g;
     while ((match = xmlToolPattern.exec(content)) !== null) {
-      const toolBlock = match[1];
+      const toolBlock = match[1].trimStart();
       const toolNameMatch = toolBlock.match(/^([a-zA-Z0-9_\-]+)/);
       if (toolNameMatch) {
         const toolName = toolNameMatch[1].trim();
-        const args: Record<string, any> = {};
-
-        // Extract all key-value pairs
-        const argKeys = [...toolBlock.matchAll(/<arg_key>([\s\S]*?)<\/arg_key>/g)];
-        const argVals = [...toolBlock.matchAll(/<arg_value>([\s\S]*?)<\/arg_value>/g)];
-
-        for (let i = 0; i < Math.min(argKeys.length, argVals.length); i++) {
-          args[argKeys[i][1].trim()] = argVals[i][1].trim();
-        }
+        const args = this.parseXmlToolArgs(toolBlock);
 
         if (this.validateToolCall({ name: toolName, args })) {
           const signature = `${toolName}:${JSON.stringify(args)}`;
@@ -846,6 +838,22 @@ Respond professionally like a developer tool, not a chatbot.`;
     }
 
     return toolCalls;
+  }
+
+  private parseXmlToolArgs(toolBlock: string): Record<string, string> {
+    const args: Record<string, string> = {};
+    const argPattern = /<arg_key>([\s\S]*?)<\/arg_key>\s*<arg_value>([\s\S]*?)(?=<\/arg_value>|<arg_key>|$)/g;
+    let argMatch: RegExpExecArray | null;
+
+    while ((argMatch = argPattern.exec(toolBlock)) !== null) {
+      const key = argMatch[1].trim();
+      const value = argMatch[2].trim();
+      if (key) {
+        args[key] = value;
+      }
+    }
+
+    return args;
   }
 
   private parseToolCallJSON(jsonStr: string): { name: string; args: Record<string, unknown> } | null {
@@ -868,6 +876,7 @@ Respond professionally like a developer tool, not a chatbot.`;
   private stripToolCallContent(content: string): string {
     return content
       .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+      .replace(/<tool_call>[\s\S]*$/g, '')
       .replace(/tool_call:\s*\{[\s\S]*?\}(?=\n|$)/g, '')
       .replace(/\*\*TOOL CALL:\*\*[\s\S]*?(?=\n{2,}|\Z)/g, '')
       .trim();
