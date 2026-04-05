@@ -111,6 +111,7 @@ export function resolveDirectoryHint(cwd: string, hint: string): DirectoryHintRe
 function sanitizeDirectoryHint(hint: string): string {
   return normalizeUserPath(
     hint
+      .replace(/\bnamed\b/gi, '')
       .replace(/\b(?:dir|directory|folder)\b/gi, '')
       .replace(/[.,!?]+$/g, '')
       .trim()

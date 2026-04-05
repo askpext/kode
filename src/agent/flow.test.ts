@@ -128,6 +128,92 @@ describe('Agent workspace flow', () => {
     }
   });
 
+  it('creates a missing sibling directory deterministically and switches there after approval', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-create-dir-'));
+    const codeRoot = join(root, 'code');
+    const kodeDir = join(codeRoot, 'kode');
+    const lowkeyDir = join(codeRoot, 'lowkey');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+    await writeFile(join(kodeDir, 'package.json'), '{"name":"kode"}', 'utf-8');
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const miss = await agent.run('hey can you go to dir lowkey');
+      expect(miss.content).toContain("I couldn't find that directory");
+
+      const create = await agent.run('okay then make one');
+      expect(create.done).toBe(false);
+      expect(create.toolCalls?.[0].name).toBe('create_directory');
+      expect(create.toolCalls?.[0].args).toEqual({ path: lowkeyDir });
+
+      agent.grantPermission('write', true);
+      const execution = await agent.executeToolWithPermission(create.toolCalls![0]);
+      expect(execution.success).toBe(true);
+
+      const completion = await agent.continueAfterPermission();
+      expect(completion.done).toBe(true);
+      expect(completion.content).toContain(`Created directory: ${lowkeyDir}`);
+      expect(agent.getCwd()).toBe(lowkeyDir);
+    } finally {
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('counts directories deterministically without falling back to recursive bash logic', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-count-dir-'));
+    const kodeDir = join(root, 'kode');
+    const alphaDir = join(kodeDir, 'alpha');
+    const betaDir = join(kodeDir, 'beta');
+    const nestedDir = join(alphaDir, 'nested');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(nestedDir, { recursive: true });
+    await mkdir(betaDir, { recursive: true });
+    await writeFile(join(kodeDir, 'package.json'), '{"name":"kode"}', 'utf-8');
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const result = await agent.run('how many dir are there in current workspace?');
+      expect(result.done).toBe(true);
+      expect(result.content).toContain(`There are 2 directories in ${kodeDir} (directly).`);
+      expect(result.content).toContain(alphaDir);
+      expect(result.content).toContain(betaDir);
+      expect(result.content).not.toContain(nestedDir);
+    } finally {
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('stops when the model repeats identical tool calls', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kode-agent-duplicate-tools-'));
     const kodeDir = join(root, 'kode');

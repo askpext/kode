@@ -114,11 +114,11 @@ export async function buildResumePlan(
 }
 
 export function requiresPermission(toolName: string): boolean {
-  return ['bash', 'write_file', 'edit_file'].includes(toolName);
+  return ['bash', 'write_file', 'edit_file', 'create_directory'].includes(toolName);
 }
 
 export function getPermissionType(toolCall: AgentToolCall): PermissionType {
-  if (toolCall.name === 'write_file') {
+  if (toolCall.name === 'write_file' || toolCall.name === 'create_directory') {
     return 'write';
   }
   if (toolCall.name === 'edit_file') {

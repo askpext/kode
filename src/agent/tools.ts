@@ -157,6 +157,37 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'create_directory',
+    description: 'Create a directory. Requires permission.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Path to the directory relative to the current working directory',
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'count_directories',
+    description: 'Count directories inside a directory.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Directory path to inspect. Optional, defaults to current directory.',
+        },
+        recursive: {
+          type: 'boolean',
+          description: 'Whether to count nested directories recursively.',
+        },
+      },
+    },
+  },
+  {
     name: 'todo_write',
     description: 'Write a list of todos for planning multi-step tasks. Replaces the entire todo list.',
     parameters: {
@@ -295,6 +326,10 @@ export class ToolExecutor {
         return this.executeGrep(toolCall, cwd);
       case 'list_dir':
         return this.executeListDir(toolCall, cwd);
+      case 'create_directory':
+        return this.executeCreateDirectory(toolCall, cwd);
+      case 'count_directories':
+        return this.executeCountDirectories(toolCall, cwd);
       case 'todo_write':
         return this.executeTodoWrite(toolCall, sessionId);
       case 'todo_read':
@@ -481,6 +516,43 @@ export class ToolExecutor {
     return {
       success: result.success,
       result: formatLsResult(result),
+    };
+  }
+
+  private async executeCreateDirectory(
+    toolCall: ToolCall,
+    cwd: string
+  ): Promise<ToolExecutionResult> {
+    const { applyCreateDirectory, formatCreateDirectoryResult } = await import('../tools/dir.js');
+    const args = toolCall.args as { path: string };
+
+    const permission = await this.checkPermission('write');
+    if (!permission.granted) {
+      return {
+        success: false,
+        result: permission.reason || 'Permission denied',
+        requiresPermission: true,
+        permissionGranted: false,
+      };
+    }
+
+    const result = await applyCreateDirectory(args, cwd);
+    return {
+      success: result.success,
+      result: formatCreateDirectoryResult(result),
+    };
+  }
+
+  private async executeCountDirectories(
+    toolCall: ToolCall,
+    cwd: string
+  ): Promise<ToolExecutionResult> {
+    const { countDirectoriesTool, formatCountDirectoriesResult } = await import('../tools/dir.js');
+    const args = toolCall.args as { path?: string; recursive?: boolean };
+    const result = await countDirectoriesTool(args, cwd);
+    return {
+      success: result.success,
+      result: formatCountDirectoriesResult(result),
     };
   }
 

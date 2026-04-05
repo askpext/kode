@@ -5,8 +5,11 @@ import SessionDB from '../db/sessions.js';
 import { loadConfig, findAgentsFile, readAgentsFile } from '../config.js';
 import { getGitStatusString } from '../utils/git.js';
 import { platform } from 'os';
-import { resolveDirectoryHint } from '../tools/path.js';
+import { existsSync } from 'fs';
+import { dirname, relative, resolve } from 'path';
+import { resolveDirectoryHint, resolveFlexiblePath } from '../tools/path.js';
 import { analyzeCodebase, isAnalysisIntent } from '../core/agent/analyze.js';
+import { countDirectoriesTool, formatCountDirectoriesResult } from '../tools/dir.js';
 
 export interface AgentOptions {
   sessionId: string;
@@ -35,6 +38,16 @@ export class Agent {
   private model: string;
   private recentNavigationAttempts: string[] = [];
   private lastFailureMessage: string | null = null;
+  private lastMissingDirectoryHint: string | null = null;
+  private lastPermissionResult: { toolName: string; success: boolean; result: string } | null = null;
+  private pendingDeterministicPermission:
+    | {
+        toolName: string;
+        successMessage: string;
+        failureMessage: string;
+        nextCwd?: string;
+      }
+    | null = null;
 
   constructor(options: AgentOptions) {
     this.sessionId = options.sessionId;
@@ -105,6 +118,16 @@ export class Agent {
     const failureFollowupResponse = await this.tryHandleFailureFollowup(userMessage);
     if (failureFollowupResponse) {
       return failureFollowupResponse;
+    }
+
+    const directoryCreationResponse = await this.tryHandleDirectoryCreationIntent(userMessage);
+    if (directoryCreationResponse) {
+      return directoryCreationResponse;
+    }
+
+    const directoryCountResponse = await this.tryHandleDirectoryCountIntent(userMessage);
+    if (directoryCountResponse) {
+      return directoryCountResponse;
     }
 
     const navigationResponse = await this.tryHandleNavigationIntent(userMessage);
@@ -178,7 +201,7 @@ export class Agent {
         const toolResults: Array<{ toolCallId: string; result: string; isError?: boolean }> = [];
 
         for (const toolCall of toolCalls) {
-          const requiresPermission = ['bash', 'write_file', 'edit_file'].includes(toolCall.name);
+          const requiresPermission = ['bash', 'write_file', 'edit_file', 'create_directory'].includes(toolCall.name);
 
           if (requiresPermission) {
             return {
@@ -371,6 +394,12 @@ export class Agent {
       content: `[TOOL RESULT for ${toolCall.name}]\n${result.result}\n[END TOOL RESULT]\n\nAbove is the REAL output from ${toolCall.name}. Use this EXACT content.`,
     });
 
+    this.lastPermissionResult = {
+      toolName: toolCall.name,
+      success: result.success,
+      result: result.result,
+    };
+
     return {
       success: result.success,
       result: result.result,
@@ -382,6 +411,11 @@ export class Agent {
    * Resumes the agent loop so it can process the tool results and give a proper response.
    */
   async continueAfterPermission(): Promise<AgentResponse> {
+    const deterministicResponse = await this.tryHandleDeterministicPermissionCompletion();
+    if (deterministicResponse) {
+      return deterministicResponse;
+    }
+
     let iterationCount = 0;
     const maxIterations = 15;
     let previousToolRoundSignature: string | null = null;
@@ -431,7 +465,7 @@ export class Agent {
         }
         // If the resumed loop needs permission again, surface it back to the UI
         const requiresPermission = toolCalls.some((tc) =>
-          ['bash', 'write_file', 'edit_file'].includes(tc.name)
+          ['bash', 'write_file', 'edit_file', 'create_directory'].includes(tc.name)
         );
 
         if (requiresPermission) {
@@ -487,6 +521,7 @@ export class Agent {
     if (resolution.matches.length === 1) {
       const nextCwd = resolution.matches[0];
       this.recentNavigationAttempts = [];
+      this.lastMissingDirectoryHint = null;
       await this.setCwd(nextCwd);
 
       const response = `Switched workspace to ${nextCwd}\nI can analyze this codebase, inspect files, or make changes here now.`;
@@ -506,6 +541,7 @@ export class Agent {
 
     if (resolution.matches.length > 1) {
       this.recentNavigationAttempts = resolution.matches;
+      this.lastMissingDirectoryHint = hint;
       const response = `I found multiple matching directories:\n${resolution.matches.map((match) => `- ${match}`).join('\n')}\nTell me which one to use.`;
       this.lastFailureMessage = response;
       this.contextManager.addMessage({ role: 'assistant', content: response });
@@ -522,6 +558,7 @@ export class Agent {
     }
 
     this.recentNavigationAttempts = resolution.attempted;
+    this.lastMissingDirectoryHint = hint;
     const response = `I couldn't find that directory from the current workspace.\nTried:\n${resolution.attempted.slice(0, 5).map((path) => `- ${path}`).join('\n')}`;
     this.lastFailureMessage = response;
     this.contextManager.addMessage({ role: 'assistant', content: response });
@@ -583,7 +620,22 @@ export class Agent {
 
   private extractDirectoryHint(userMessage: string): string | null {
     const trimmed = userMessage.trim();
-    const navigationMatch = trimmed.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use)\s+(.+?)(?:\s+(?:dir|directory|folder))?$/i);
+    const checkInMatch = trimmed.match(/(?:^|\b)(?:check in|look in)\s+(.+?)$/i);
+    if (checkInMatch) {
+      return checkInMatch[1].trim();
+    }
+
+    const namedNavigationMatch = trimmed.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use|check)\s+(?:a\s+)?(?:dir|directory|folder)\s+named\s+(.+?)$/i);
+    if (namedNavigationMatch) {
+      return namedNavigationMatch[1].trim();
+    }
+
+    const directDirectoryMatch = trimmed.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use|check)\s+(?:a\s+)?(?:dir|directory|folder)\s+(.+?)$/i);
+    if (directDirectoryMatch) {
+      return directDirectoryMatch[1].trim();
+    }
+
+    const navigationMatch = trimmed.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use|check)\s+(.+?)(?:\s+(?:dir|directory|folder))?$/i);
     if (navigationMatch) {
       return navigationMatch[1].trim();
     }
@@ -885,7 +937,7 @@ Respond professionally like a developer tool, not a chatbot.`;
   private validateToolCall(call: { name: string; args: Record<string, unknown> }): boolean {
     const validTools = [
       'read_file', 'write_file', 'edit_file', 'bash',
-      'grep', 'list_dir', 'todo_write', 'todo_read',
+      'grep', 'list_dir', 'create_directory', 'count_directories', 'todo_write', 'todo_read',
       'replace_multi', 'fetch_url', 'bash_background', 'bash_status'
     ];
 
@@ -905,6 +957,8 @@ Respond professionally like a developer tool, not a chatbot.`;
       bash: ['command'],
       grep: ['pattern'],
       list_dir: [],
+      create_directory: ['path'],
+      count_directories: [],
       todo_write: ['todos'],
       todo_read: [],
       replace_multi: ['path', 'edits'],
@@ -921,6 +975,164 @@ Respond professionally like a developer tool, not a chatbot.`;
     }
 
     return true;
+  }
+
+  private async tryHandleDirectoryCreationIntent(userMessage: string): Promise<AgentResponse | null> {
+    const explicitHint = this.extractCreateDirectoryHint(userMessage);
+    const shouldCreateFromContext = this.shouldCreateLastMissingDirectory(userMessage);
+    const hint = explicitHint || (shouldCreateFromContext ? this.lastMissingDirectoryHint : null);
+
+    if (!hint) {
+      return null;
+    }
+
+    const targetPath = this.resolveDirectoryCreationTarget(hint);
+    const relativePath = this.toWorkspaceRelativePath(targetPath);
+    const toolCall: ToolCall = {
+      id: 'deterministic_create_directory',
+      name: 'create_directory',
+      args: {
+        path: relativePath,
+      },
+    };
+
+    this.pendingDeterministicPermission = {
+      toolName: 'create_directory',
+      successMessage: existsSync(targetPath)
+        ? `Directory already exists: ${targetPath}\nSwitched workspace to ${targetPath}`
+        : `Created directory: ${targetPath}\nSwitched workspace to ${targetPath}`,
+      failureMessage: `I couldn't create ${targetPath}.`,
+      nextCwd: targetPath,
+    };
+
+    const response = existsSync(targetPath)
+      ? `I found that directory already exists at ${targetPath}. Approve the directory action and I’ll switch the workspace there.`
+      : `I can create ${targetPath} and switch the workspace there once you approve it.`;
+
+    this.contextManager.addMessage({ role: 'assistant', content: response, toolCalls: [toolCall] });
+    return {
+      content: response,
+      toolCalls: [toolCall],
+      done: false,
+    };
+  }
+
+  private async tryHandleDirectoryCountIntent(userMessage: string): Promise<AgentResponse | null> {
+    const match = userMessage.trim().match(/(?:how many|count)\s+(?:directories|directory|dirs|dir)\s+(?:are there\s+)?(?:in\s+(.+))?\??$/i);
+    if (!match) {
+      return null;
+    }
+
+    const rawTarget = match[1]?.trim().replace(/[?.,!]+$/g, '');
+    const targetHint = rawTarget && !/^(here|current|current workspace)$/i.test(rawTarget) ? rawTarget : undefined;
+    const recursive = /\brecursive|recursively|all\b/i.test(userMessage);
+    const result = await countDirectoriesTool({ path: targetHint, recursive }, this.cwd);
+    const response = formatCountDirectoriesResult(result);
+
+    this.lastFailureMessage = result.success ? null : response;
+    this.contextManager.addMessage({ role: 'assistant', content: response });
+    await this.db.addMessage({
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: response,
+    });
+
+    return {
+      content: response,
+      done: true,
+    };
+  }
+
+  private async tryHandleDeterministicPermissionCompletion(): Promise<AgentResponse | null> {
+    if (!this.pendingDeterministicPermission || !this.lastPermissionResult) {
+      return null;
+    }
+
+    if (this.pendingDeterministicPermission.toolName !== this.lastPermissionResult.toolName) {
+      return null;
+    }
+
+    const pending = this.pendingDeterministicPermission;
+    const permissionResult = this.lastPermissionResult;
+    this.pendingDeterministicPermission = null;
+    this.lastPermissionResult = null;
+
+    let response = pending.failureMessage;
+    if (permissionResult.success) {
+      if (pending.nextCwd) {
+        await this.setCwd(pending.nextCwd);
+      }
+      this.lastMissingDirectoryHint = null;
+      this.recentNavigationAttempts = [];
+      this.lastFailureMessage = null;
+      response = pending.successMessage;
+    } else {
+      response = `${pending.failureMessage}\n\n${permissionResult.result}`;
+      this.lastFailureMessage = response;
+    }
+
+    this.contextManager.addMessage({ role: 'assistant', content: response });
+    await this.db.addMessage({
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: response,
+    });
+
+    return {
+      content: response,
+      done: true,
+    };
+  }
+
+  private extractCreateDirectoryHint(userMessage: string): string | null {
+    const trimmed = userMessage.trim();
+    const explicitMatch = trimmed.match(/(?:^|\b)(?:make|create|mkdir)\s+(?:a\s+)?(?:dir|directory|folder)\s+(?:named\s+)?["']?([^"'?]+?)["']?\??$/i);
+    if (explicitMatch) {
+      return explicitMatch[1].trim();
+    }
+
+    return null;
+  }
+
+  private shouldCreateLastMissingDirectory(userMessage: string): boolean {
+    if (!this.lastMissingDirectoryHint) {
+      return false;
+    }
+
+    return /^(?:(?:ok(?:ay)?|yes|then)\s+)*(?:make one|create one|make it|create it|make that|create that)\b/i.test(userMessage.trim());
+  }
+
+  private resolveDirectoryCreationTarget(hint: string): string {
+    const normalizedHint = hint.trim();
+
+    if (/^(~?[\\/]|[A-Za-z]:\\)/.test(normalizedHint) || normalizedHint.includes('/')) {
+      return resolveFlexiblePath(this.cwd, normalizedHint);
+    }
+
+    if (normalizedHint.includes('\\')) {
+      return resolveFlexiblePath(this.cwd, normalizedHint.replace(/\\/g, '/'));
+    }
+
+    if (this.isProjectWorkspace(this.cwd)) {
+      return resolve(dirname(this.cwd), normalizedHint);
+    }
+
+    return resolve(this.cwd, normalizedHint);
+  }
+
+  private isProjectWorkspace(directory: string): boolean {
+    return ['package.json', '.git', 'README.md', 'README'].some((marker) =>
+      existsSync(resolve(directory, marker))
+    );
+  }
+
+  private toWorkspaceRelativePath(targetPath: string): string {
+    const relativePath = relative(this.cwd, targetPath);
+    if (relativePath && !relativePath.startsWith('..') && relativePath !== '.') {
+      return relativePath;
+    }
+
+    return targetPath;
   }
 
   getContextStatus() {
