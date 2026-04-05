@@ -128,6 +128,43 @@ describe('Agent workspace flow', () => {
     }
   });
 
+  it('accepts a bare directory followup after a navigation miss', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-bare-followup-'));
+    const kodeDir = join(root, 'kode');
+    const lowkeyDir = join(root, 'lowkey');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+    await mkdir(lowkeyDir, { recursive: true });
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const miss = await agent.run('go to dir named lowkee');
+      expect(miss.content).toContain("I couldn't find that directory");
+
+      const followup = await agent.run('lowkey');
+      expect(followup.done).toBe(true);
+      expect(followup.content).toContain(lowkeyDir);
+      expect(agent.getCwd()).toBe(lowkeyDir);
+    } finally {
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('creates a missing sibling directory deterministically and switches there after approval', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kode-agent-create-dir-'));
     const codeRoot = join(root, 'code');
@@ -496,6 +533,41 @@ describe('Agent workspace flow', () => {
         args: { command: 'npm test' },
       });
     } finally {
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('stays out of the llm loop for vague deterministic workspace requests', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-fallback-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const llmSpy = vi.spyOn(agent as unknown as { callLLM: () => Promise<string | null> }, 'callLLM');
+      const response = await agent.run('workspace path?');
+
+      expect(response.done).toBe(true);
+      expect(response.content).toContain('deterministic workspace mode');
+      expect(llmSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
       await db.close();
       await rm(root, { recursive: true, force: true });
     }

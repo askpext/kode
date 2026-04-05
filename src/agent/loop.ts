@@ -121,6 +121,11 @@ export class Agent {
       return failureFollowupResponse;
     }
 
+    const deterministicFollowupResponse = await this.tryHandleDeterministicFollowupIntent(userMessage);
+    if (deterministicFollowupResponse) {
+      return deterministicFollowupResponse;
+    }
+
     const actionFollowupResponse = await this.tryHandleActionFollowup(userMessage);
     if (actionFollowupResponse) {
       return actionFollowupResponse;
@@ -164,6 +169,11 @@ export class Agent {
     const analysisResponse = await this.tryHandleAnalysisIntent(userMessage);
     if (analysisResponse) {
       return analysisResponse;
+    }
+
+    const deterministicFallbackResponse = await this.tryHandleDeterministicFallback(userMessage);
+    if (deterministicFallbackResponse) {
+      return deterministicFallbackResponse;
     }
 
     let iterationCount = 0;
@@ -542,6 +552,11 @@ export class Agent {
       return null;
     }
 
+    return this.tryHandleNavigationHint(hint);
+  }
+
+  private async tryHandleNavigationHint(hint: string): Promise<AgentResponse | null> {
+
     const resolution = resolveDirectoryHint(this.cwd, hint);
 
     if (resolution.matches.length === 1) {
@@ -620,6 +635,37 @@ export class Agent {
     };
   }
 
+  private async tryHandleDeterministicFallback(userMessage: string): Promise<AgentResponse | null> {
+    const domain = this.classifyDeterministicDomain(userMessage);
+    if (!domain) {
+      return null;
+    }
+
+    const responseByDomain: Record<typeof domain, string> = {
+      workspace: this.lastMissingDirectoryHint
+        ? `I’m staying in deterministic workspace mode here. If you want that repo, give me a path like \`/home/aditya/lowkey\` or tell me to create \`${this.lastMissingDirectoryHint}\`.`
+        : 'I’m staying in deterministic workspace mode here. Give me a concrete directory name or path, like `go to lowkey dir` or `go to /home/aditya/lowkey`.',
+      directory: 'I’m staying in deterministic directory mode here. Ask me to create a named folder, count directories in a path, or list a specific directory.',
+      file: 'I’m staying in deterministic file mode here. Ask me to read a file path, replace quoted text in a file, or tell me exactly which file to create.',
+      analysis: 'I’m staying in deterministic analysis mode here. Ask me to analyze the current codebase or switch to a workspace first, then I’ll summarize it directly.',
+      task: 'I’m staying in deterministic task mode here. Ask me to run tests, run the build, or start the dev server in the current workspace.',
+    };
+
+    const response = responseByDomain[domain];
+    this.lastFailureMessage = response;
+    this.contextManager.addMessage({ role: 'assistant', content: response });
+    await this.db.addMessage({
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: response,
+    });
+
+    return {
+      content: response,
+      done: true,
+    };
+  }
+
   private async tryHandleFailureFollowup(userMessage: string): Promise<AgentResponse | null> {
     if (!this.lastFailureMessage) {
       return null;
@@ -667,29 +713,48 @@ export class Agent {
     };
   }
 
+  private async tryHandleDeterministicFollowupIntent(userMessage: string): Promise<AgentResponse | null> {
+    if (!this.lastMissingDirectoryHint) {
+      return null;
+    }
+
+    const trimmed = userMessage.trim();
+    if (!trimmed || /\s{2,}/.test(trimmed)) {
+      return null;
+    }
+
+    if (!this.looksLikeDirectoryFollowup(trimmed)) {
+      return null;
+    }
+
+    return this.tryHandleNavigationHint(trimmed);
+  }
+
   private extractDirectoryHint(userMessage: string): string | null {
     const trimmed = userMessage.trim();
+    const normalized = trimmed.replace(/^(?:hey|hi|hello|please|bro+|okay|ok)\s+/i, '');
+    const politeNormalized = normalized.replace(/^(?:can you|could you|would you)\s+/i, '');
     const checkInMatch = trimmed.match(/(?:^|\b)(?:check in|look in)\s+(.+?)$/i);
     if (checkInMatch) {
       return checkInMatch[1].trim();
     }
 
-    const namedNavigationMatch = trimmed.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use|check)\s+(?:a\s+)?(?:dir|directory|folder)\s+named\s+(.+?)$/i);
+    const namedNavigationMatch = politeNormalized.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use|check)\s+(?:a\s+)?(?:dir|directory|folder)\s+named\s+(.+?)$/i);
     if (namedNavigationMatch) {
       return namedNavigationMatch[1].trim();
     }
 
-    const directDirectoryMatch = trimmed.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use|check)\s+(?:a\s+)?(?:dir|directory|folder)\s+(.+?)$/i);
+    const directDirectoryMatch = politeNormalized.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use|check)\s+(?:a\s+)?(?:dir|directory|folder)\s+(.+?)$/i);
     if (directDirectoryMatch) {
       return directDirectoryMatch[1].trim();
     }
 
-    const navigationMatch = trimmed.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use|check)\s+(.+?)(?:\s+(?:dir|directory|folder))?$/i);
+    const navigationMatch = politeNormalized.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use|check)\s+(.+?)(?:\s+(?:dir|directory|folder))?$/i);
     if (navigationMatch) {
       return navigationMatch[1].trim();
     }
 
-    const namedDirectoryMatch = trimmed.match(/(?:^|\b)(?:explore|inspect|open|use)\s+(?:a\s+)?(?:dir|directory|folder)\s+named\s+(.+?)$/i);
+    const namedDirectoryMatch = politeNormalized.match(/(?:^|\b)(?:explore|inspect|open|use)\s+(?:a\s+)?(?:dir|directory|folder)\s+named\s+(.+?)$/i);
     if (namedDirectoryMatch) {
       return namedDirectoryMatch[1].trim();
     }
@@ -1405,6 +1470,59 @@ Respond professionally like a developer tool, not a chatbot.`;
     } catch {
       return null;
     }
+  }
+
+  private classifyDeterministicDomain(userMessage: string): 'workspace' | 'directory' | 'file' | 'analysis' | 'task' | null {
+    const trimmed = userMessage.trim().toLowerCase();
+
+    if (this.looksLikeDirectoryFollowup(trimmed) && this.lastMissingDirectoryHint) {
+      return 'workspace';
+    }
+
+    if (/\b(analy[sz]e|inspect|review|summari[sz]e|understand)\b.*\b(codebase|repo|repository|project)\b/.test(trimmed)) {
+      return 'analysis';
+    }
+
+    if (/\b(run|start|execute|build|test|dev server|development server)\b/.test(trimmed)) {
+      return 'task';
+    }
+
+    if (/\b(read|show|view|replace|change)\b/.test(trimmed) && /\b(file|\.|readme|package\.json|tsconfig|note\.txt)\b/.test(trimmed)) {
+      return 'file';
+    }
+
+    if (/\b(go to|goto|switch to|move to|open|enter|use|workspace|path)\b/.test(trimmed) || /^[/~]/.test(trimmed)) {
+      return 'workspace';
+    }
+
+    if (/\b(dir|directory|folder|mkdir|count directories|count dirs|list directory)\b/.test(trimmed)) {
+      return 'directory';
+    }
+
+    return null;
+  }
+
+  private looksLikeDirectoryFollowup(input: string): boolean {
+    const trimmed = input.trim();
+    if (!trimmed || trimmed.length > 120) {
+      return false;
+    }
+
+    if (/["'`]/.test(trimmed)) {
+      return false;
+    }
+
+    if (/\b(make|create|read|show|replace|change|run|start|build|test|analy[sz]e)\b/i.test(trimmed)) {
+      return false;
+    }
+
+    if (/\s/.test(trimmed) && !/[\\/]/.test(trimmed)) {
+      return false;
+    }
+
+    return /^([A-Za-z0-9._~/-]+(?:\\[A-Za-z0-9._ -]+)*)$/.test(trimmed)
+      || /^[A-Za-z0-9._ -]+\/[A-Za-z0-9._ -]+$/.test(trimmed)
+      || /^[A-Za-z0-9._ -]+$/.test(trimmed);
   }
 
   getContextStatus() {
