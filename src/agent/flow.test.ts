@@ -338,4 +338,126 @@ describe('Agent workspace flow', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('reads an explicit file deterministically without using the model loop', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-read-file-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+    await writeFile(join(kodeDir, 'README.md'), '# hello\nworld\n', 'utf-8');
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const response = await agent.run('read README.md');
+
+      expect(response.done).toBe(true);
+      expect(response.content).toContain('# hello');
+      expect(response.content).toContain('world');
+    } finally {
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('edits an explicit file deterministically after approval', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-edit-file-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+    await writeFile(join(kodeDir, 'note.txt'), 'hello world', 'utf-8');
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const response = await agent.run('replace "world" with "team" in note.txt');
+
+      expect(response.done).toBe(false);
+      expect(response.toolCalls?.[0].name).toBe('edit_file');
+
+      agent.grantPermission('edit', true);
+      const execution = await agent.executeToolWithPermission(response.toolCalls![0]);
+      expect(execution.success).toBe(true);
+
+      const completion = await agent.continueAfterPermission();
+      expect(completion.done).toBe(true);
+      expect(completion.content).toContain('Updated note.txt');
+
+      const followup = await agent.run('did it?');
+      expect(followup.content).toContain('Updated note.txt');
+    } finally {
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('creates a portfolio starter deterministically as a single write action', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-portfolio-'));
+    const kodeDir = join(root, 'dics');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const response = await agent.run('make a good html css portfolio there');
+
+      expect(response.done).toBe(false);
+      expect(response.toolCalls?.[0].name).toBe('write_file');
+      expect(response.toolCalls?.[0].args).toMatchObject({ path: 'index.html' });
+
+      agent.grantPermission('write', true);
+      const execution = await agent.executeToolWithPermission(response.toolCalls![0]);
+      expect(execution.success).toBe(true);
+
+      const completion = await agent.continueAfterPermission();
+      expect(completion.done).toBe(true);
+      expect(completion.content).toContain(join(kodeDir, 'index.html'));
+
+      const status = await agent.run('did it?');
+      expect(status.content).toContain(join(kodeDir, 'index.html'));
+    } finally {
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

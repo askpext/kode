@@ -40,6 +40,7 @@ export class Agent {
   private lastFailureMessage: string | null = null;
   private lastMissingDirectoryHint: string | null = null;
   private lastPermissionResult: { toolName: string; success: boolean; result: string } | null = null;
+  private lastActionSummary: string | null = null;
   private pendingDeterministicPermission:
     | {
         toolName: string;
@@ -118,6 +119,26 @@ export class Agent {
     const failureFollowupResponse = await this.tryHandleFailureFollowup(userMessage);
     if (failureFollowupResponse) {
       return failureFollowupResponse;
+    }
+
+    const actionFollowupResponse = await this.tryHandleActionFollowup(userMessage);
+    if (actionFollowupResponse) {
+      return actionFollowupResponse;
+    }
+
+    const readFileResponse = await this.tryHandleReadFileIntent(userMessage);
+    if (readFileResponse) {
+      return readFileResponse;
+    }
+
+    const replaceTextResponse = await this.tryHandleReplaceTextIntent(userMessage);
+    if (replaceTextResponse) {
+      return replaceTextResponse;
+    }
+
+    const portfolioResponse = await this.tryHandlePortfolioIntent(userMessage);
+    if (portfolioResponse) {
+      return portfolioResponse;
     }
 
     const directoryCreationResponse = await this.tryHandleDirectoryCreationIntent(userMessage);
@@ -618,6 +639,29 @@ export class Agent {
     };
   }
 
+  private async tryHandleActionFollowup(userMessage: string): Promise<AgentResponse | null> {
+    if (!this.lastActionSummary) {
+      return null;
+    }
+
+    if (!/^(did it\??|did you do it\??|done\??|status\??|tello\??)$/i.test(userMessage.trim())) {
+      return null;
+    }
+
+    const response = this.lastActionSummary;
+    this.contextManager.addMessage({ role: 'assistant', content: response });
+    await this.db.addMessage({
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: response,
+    });
+
+    return {
+      content: response,
+      done: true,
+    };
+  }
+
   private extractDirectoryHint(userMessage: string): string | null {
     const trimmed = userMessage.trim();
     const checkInMatch = trimmed.match(/(?:^|\b)(?:check in|look in)\s+(.+?)$/i);
@@ -1017,6 +1061,100 @@ Respond professionally like a developer tool, not a chatbot.`;
     };
   }
 
+  private async tryHandleReadFileIntent(userMessage: string): Promise<AgentResponse | null> {
+    const match = userMessage.trim().match(/^(?:read|show|view)\s+(?:the\s+)?(?:file\s+)?(.+?)\??$/i);
+    if (!match) {
+      return null;
+    }
+
+    const path = match[1].trim().replace(/^["']|["']$/g, '');
+    if (!path || /\b(codebase|repo|project)\b/i.test(path)) {
+      return null;
+    }
+
+    const { readFileTool, formatReadResult } = await import('../tools/read.js');
+    const result = await readFileTool({ path }, this.cwd);
+    const response = formatReadResult(result);
+
+    this.lastFailureMessage = result.success ? null : response;
+    this.lastActionSummary = result.success ? `Read file: ${path}` : null;
+    this.contextManager.addMessage({ role: 'assistant', content: response });
+    await this.db.addMessage({
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: response,
+    });
+
+    return {
+      content: response,
+      done: true,
+    };
+  }
+
+  private async tryHandleReplaceTextIntent(userMessage: string): Promise<AgentResponse | null> {
+    const match = userMessage.trim().match(/^(?:replace|change)\s+["']([\s\S]+?)["']\s+with\s+["']([\s\S]+?)["']\s+in\s+(.+?)\??$/i);
+    if (!match) {
+      return null;
+    }
+
+    const [, target, replacement, path] = match;
+    const normalizedPath = path.trim().replace(/^["']|["']$/g, '');
+    const toolCall: ToolCall = {
+      id: 'deterministic_edit_file',
+      name: 'edit_file',
+      args: {
+        path: normalizedPath,
+        target,
+        replacement,
+      },
+    };
+
+    this.pendingDeterministicPermission = {
+      toolName: 'edit_file',
+      successMessage: `Updated ${normalizedPath}`,
+      failureMessage: `I couldn't update ${normalizedPath}.`,
+    };
+
+    const response = `I can update ${normalizedPath} by replacing the requested text as soon as you approve the edit.`;
+    this.contextManager.addMessage({ role: 'assistant', content: response, toolCalls: [toolCall] });
+    return {
+      content: response,
+      toolCalls: [toolCall],
+      done: false,
+    };
+  }
+
+  private async tryHandlePortfolioIntent(userMessage: string): Promise<AgentResponse | null> {
+    const trimmed = userMessage.trim().toLowerCase();
+    if (!/\bportfolio\b/.test(trimmed) || !/\b(html|css|website|landing page|site)\b/.test(trimmed)) {
+      return null;
+    }
+
+    const content = buildPortfolioHtml();
+    const toolCall: ToolCall = {
+      id: 'deterministic_write_portfolio',
+      name: 'write_file',
+      args: {
+        path: 'index.html',
+        content,
+      },
+    };
+
+    this.pendingDeterministicPermission = {
+      toolName: 'write_file',
+      successMessage: `Created portfolio starter at ${resolve(this.cwd, 'index.html')}`,
+      failureMessage: `I couldn't create the portfolio starter in ${this.cwd}.`,
+    };
+
+    const response = `I can create a polished single-file portfolio starter at ${resolve(this.cwd, 'index.html')} once you approve the write.`;
+    this.contextManager.addMessage({ role: 'assistant', content: response, toolCalls: [toolCall] });
+    return {
+      content: response,
+      toolCalls: [toolCall],
+      done: false,
+    };
+  }
+
   private async tryHandleDirectoryCountIntent(userMessage: string): Promise<AgentResponse | null> {
     const match = userMessage.trim().match(/(?:how many|count)\s+(?:directories|directory|dirs|dir)\s+(?:are there\s+)?(?:in\s+(.+))?\??$/i);
     if (!match) {
@@ -1065,10 +1203,12 @@ Respond professionally like a developer tool, not a chatbot.`;
       this.lastMissingDirectoryHint = null;
       this.recentNavigationAttempts = [];
       this.lastFailureMessage = null;
+      this.lastActionSummary = pending.successMessage;
       response = pending.successMessage;
     } else {
       response = `${pending.failureMessage}\n\n${permissionResult.result}`;
       this.lastFailureMessage = response;
+      this.lastActionSummary = null;
     }
 
     this.contextManager.addMessage({ role: 'assistant', content: response });
@@ -1175,5 +1315,192 @@ Respond professionally like a developer tool, not a chatbot.`;
       return { error: errorMessage };
     }
   }
+}
+
+function buildPortfolioHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Portfolio</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: rgba(17, 24, 39, 0.78);
+      --text: #e5eefc;
+      --muted: #96a3b8;
+      --accent: #7c3aed;
+      --accent-2: #22d3ee;
+      --border: rgba(148, 163, 184, 0.18);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(124, 58, 237, 0.24), transparent 30%),
+        radial-gradient(circle at top right, rgba(34, 211, 238, 0.18), transparent 25%),
+        var(--bg);
+      line-height: 1.6;
+    }
+    a { color: inherit; text-decoration: none; }
+    .container { width: min(1120px, calc(100% - 2rem)); margin: 0 auto; }
+    .nav, section { padding: 1.25rem 0; }
+    .nav .container, .hero, .grid, .footer {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-links, .socials {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .hero {
+      min-height: 82vh;
+      padding: 4rem 0;
+      align-items: stretch;
+    }
+    .hero-copy, .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(16px);
+      border-radius: 24px;
+      box-shadow: 0 24px 80px rgba(15, 23, 42, 0.35);
+    }
+    .hero-copy { flex: 1.2; padding: 3rem; }
+    .hero-visual { flex: 1; display: grid; place-items: center; }
+    .badge {
+      display: inline-flex;
+      padding: 0.4rem 0.8rem;
+      border-radius: 999px;
+      background: rgba(124, 58, 237, 0.16);
+      color: #d8c4ff;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: clamp(2.5rem, 6vw, 4.8rem); line-height: 1.05; margin-bottom: 1rem; }
+    .lead { font-size: 1.08rem; color: var(--muted); max-width: 56ch; }
+    .actions { display: flex; gap: 1rem; flex-wrap: wrap; margin: 2rem 0; }
+    .button {
+      padding: 0.9rem 1.2rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      transition: transform 160ms ease, border-color 160ms ease;
+    }
+    .button.primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: white;
+      border: 0;
+    }
+    .button:hover { transform: translateY(-1px); }
+    .card {
+      padding: 1.5rem;
+      width: min(100%, 420px);
+    }
+    .stat { display: flex; justify-content: space-between; padding: 0.8rem 0; border-bottom: 1px solid var(--border); }
+    .stat:last-child { border-bottom: 0; }
+    .section-title { margin-bottom: 1rem; font-size: 1.8rem; }
+    .section-copy { color: var(--muted); max-width: 60ch; margin-bottom: 1.5rem; }
+    .grid {
+      align-items: stretch;
+      gap: 1.25rem;
+      flex-wrap: wrap;
+    }
+    .grid > * { flex: 1 1 280px; }
+    .pill-list { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    .pill {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.45rem 0.85rem;
+      color: var(--muted);
+      background: rgba(15, 23, 42, 0.45);
+    }
+    .project-title { margin-bottom: 0.35rem; }
+    .footer { padding: 2rem 0 3rem; color: var(--muted); flex-wrap: wrap; }
+    @media (max-width: 820px) {
+      .hero, .nav .container, .footer { flex-direction: column; align-items: flex-start; }
+      .hero-copy { padding: 2rem; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="container">
+      <strong>Your Name</strong>
+      <div class="nav-links">
+        <a href="#about">About</a>
+        <a href="#work">Work</a>
+        <a href="#contact">Contact</a>
+      </div>
+    </div>
+  </nav>
+  <main class="container">
+    <section class="hero">
+      <div class="hero-copy">
+        <span class="badge">Available for freelance + full-time roles</span>
+        <h1>Designer-minded developer building polished products.</h1>
+        <p class="lead">I craft fast, thoughtful web experiences with strong product instincts, clean code, and an eye for the details that make software feel premium.</p>
+        <div class="actions">
+          <a class="button primary" href="#work">View projects</a>
+          <a class="button" href="#contact">Contact me</a>
+        </div>
+        <div class="socials">
+          <a href="#">GitHub</a>
+          <a href="#">LinkedIn</a>
+          <a href="#">Email</a>
+        </div>
+      </div>
+      <div class="hero-visual">
+        <article class="card">
+          <h3>Quick snapshot</h3>
+          <div class="stat"><span>Experience</span><strong>5+ years</strong></div>
+          <div class="stat"><span>Focus</span><strong>Frontend + product UX</strong></div>
+          <div class="stat"><span>Stack</span><strong>TypeScript, React, Node.js</strong></div>
+          <div class="stat"><span>Currently</span><strong>Shipping AI-first tools</strong></div>
+        </article>
+      </div>
+    </section>
+    <section id="about">
+      <h2 class="section-title">About</h2>
+      <p class="section-copy">I work at the intersection of product thinking, interface design, and engineering execution. I like turning rough ideas into clear, high-quality experiences people actually enjoy using.</p>
+      <div class="pill-list">
+        <span class="pill">Design systems</span>
+        <span class="pill">TypeScript</span>
+        <span class="pill">React</span>
+        <span class="pill">Node.js</span>
+        <span class="pill">Performance</span>
+        <span class="pill">Developer tools</span>
+      </div>
+    </section>
+    <section id="work">
+      <h2 class="section-title">Featured work</h2>
+      <p class="section-copy">A few examples of the product and engineering work I enjoy most.</p>
+      <div class="grid">
+        <article class="card"><h3 class="project-title">AI Coding Workspace</h3><p>Built a terminal-first agent workflow with safer file operations, predictable approvals, and focused developer ergonomics.</p></article>
+        <article class="card"><h3 class="project-title">Commerce Redesign</h3><p>Improved conversion and mobile usability by redesigning checkout, simplifying content hierarchy, and tightening performance budgets.</p></article>
+        <article class="card"><h3 class="project-title">Analytics Dashboard</h3><p>Designed and shipped a modular dashboard experience with reusable charts, fast filters, and better decision-making clarity.</p></article>
+      </div>
+    </section>
+    <section id="contact">
+      <h2 class="section-title">Let’s build something good</h2>
+      <p class="section-copy">Swap in your real links, projects, and contact details, then this is ready to publish as a clean starter portfolio.</p>
+      <div class="actions">
+        <a class="button primary" href="mailto:hello@example.com">hello@example.com</a>
+        <a class="button" href="#">Book a call</a>
+      </div>
+    </section>
+  </main>
+  <footer class="container footer">
+    <span>© 2026 Your Name</span>
+    <span>Built as a lightweight single-file portfolio starter.</span>
+  </footer>
+</body>
+</html>`;
 }
 
