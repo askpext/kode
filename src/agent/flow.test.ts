@@ -651,4 +651,64 @@ describe('Agent workspace flow', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('tracks background tasks and handles status and stop requests deterministically', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-bg-status-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+    await writeFile(
+      join(kodeDir, 'package.json'),
+      JSON.stringify({ name: 'kode', scripts: { dev: 'vite' } }),
+      'utf-8'
+    );
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const start = await agent.run('start dev server');
+      expect(start.done).toBe(false);
+      expect(start.toolCalls?.[0].name).toBe('bash_background');
+
+      (agent as any).lastPermissionResult = {
+        toolName: 'bash_background',
+        success: true,
+        result: 'Started background process with ID: proc-123',
+      };
+
+      const started = await agent.continueAfterPermission();
+      expect(started.content).toContain('Process ID: proc-123');
+
+      vi.spyOn(agent as any, 'executeToolWithFallback')
+        .mockResolvedValueOnce({ success: true, result: '[Status: running]\nready' })
+        .mockResolvedValueOnce({ success: true, result: 'Process proc-123 terminated successfully.\nStatus: terminated' });
+
+      const status = await agent.run('status');
+      expect(status.done).toBe(true);
+      expect(status.content).toContain('Background task status');
+      expect(status.content).toContain('ready');
+
+      const stop = await agent.run('stop dev server');
+      expect(stop.done).toBe(true);
+      expect(stop.content).toContain('Background task stopped');
+      expect(stop.content).toContain('terminated');
+    } finally {
+      vi.restoreAllMocks();
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -41,12 +41,14 @@ export class Agent {
   private lastMissingDirectoryHint: string | null = null;
   private lastPermissionResult: { toolName: string; success: boolean; result: string } | null = null;
   private lastActionSummary: string | null = null;
+  private lastBackgroundProcess: { id: string; command: string } | null = null;
   private pendingDeterministicPermission:
     | {
         toolName: string;
         successMessage: string;
         failureMessage: string;
         nextCwd?: string;
+        backgroundCommand?: string;
       }
     | null = null;
 
@@ -124,6 +126,11 @@ export class Agent {
     const deterministicFollowupResponse = await this.tryHandleDeterministicFollowupIntent(userMessage);
     if (deterministicFollowupResponse) {
       return deterministicFollowupResponse;
+    }
+
+    const backgroundTaskResponse = await this.tryHandleBackgroundTaskIntent(userMessage);
+    if (backgroundTaskResponse) {
+      return backgroundTaskResponse;
     }
 
     const actionFollowupResponse = await this.tryHandleActionFollowup(userMessage);
@@ -730,6 +737,56 @@ export class Agent {
     return this.tryHandleNavigationHint(trimmed);
   }
 
+  private async tryHandleBackgroundTaskIntent(userMessage: string): Promise<AgentResponse | null> {
+    if (!this.lastBackgroundProcess) {
+      return null;
+    }
+
+    const trimmed = userMessage.trim().toLowerCase();
+    let action: 'read' | 'terminate' | null = null;
+
+    if (/^(status|check status|what'?s the status|what is the status|check dev server|check server|dev server status|server status)\??$/.test(trimmed)) {
+      action = 'read';
+    } else if (/^(stop|stop dev server|stop server|kill dev server|kill server|terminate server|terminate dev server)\??$/.test(trimmed)) {
+      action = 'terminate';
+    }
+
+    if (!action) {
+      return null;
+    }
+
+    const toolCall: ToolCall = {
+      id: `deterministic_background_${action}`,
+      name: 'bash_status',
+      args: {
+        id: this.lastBackgroundProcess.id,
+        action,
+      },
+    };
+
+    const result = await this.executeToolWithFallback(toolCall, 0);
+    const label = action === 'read' ? 'Background task status' : 'Background task stopped';
+    const response = `${label} for \`${this.lastBackgroundProcess.command}\`\n\n${result.result}`;
+
+    if (action === 'terminate' && result.success) {
+      this.lastBackgroundProcess = null;
+    }
+
+    this.lastFailureMessage = result.success ? null : response;
+    this.lastActionSummary = result.success ? response : this.lastActionSummary;
+    this.contextManager.addMessage({ role: 'assistant', content: response });
+    await this.db.addMessage({
+      sessionId: this.sessionId,
+      role: 'assistant',
+      content: response,
+    });
+
+    return {
+      content: response,
+      done: true,
+    };
+  }
+
   private extractDirectoryHint(userMessage: string): string | null {
     const trimmed = userMessage.trim();
     const normalized = trimmed.replace(/^(?:hey|hi|hello|please|bro+|okay|ok)\s+/i, '');
@@ -1318,6 +1375,7 @@ Respond professionally like a developer tool, not a chatbot.`;
         ? `${task.successLabel} started with \`${command}\``
         : `${task.successLabel} finished with \`${command}\``,
       failureMessage: `I couldn't ${task.label} with \`${command}\`.`,
+      backgroundCommand: task.background ? command : undefined,
     };
 
     const response = task.background
@@ -1384,6 +1442,16 @@ Respond professionally like a developer tool, not a chatbot.`;
       if (permissionResult.result && pending.toolName === 'bash') {
         response = `${pending.successMessage}\n\n${permissionResult.result}`;
       }
+      if (pending.toolName === 'bash_background') {
+        const backgroundId = this.extractBackgroundProcessId(permissionResult.result);
+        if (backgroundId && pending.backgroundCommand) {
+          this.lastBackgroundProcess = {
+            id: backgroundId,
+            command: pending.backgroundCommand,
+          };
+          response = `${pending.successMessage}\n\nProcess ID: ${backgroundId}`;
+        }
+      }
       this.lastActionSummary = response;
     } else {
       response = `${pending.failureMessage}\n\n${permissionResult.result}`;
@@ -1402,6 +1470,11 @@ Respond professionally like a developer tool, not a chatbot.`;
       content: response,
       done: true,
     };
+  }
+
+  private extractBackgroundProcessId(result: string): string | null {
+    const match = result.match(/ID:\s*([a-zA-Z0-9-]+)/i);
+    return match ? match[1] : null;
   }
 
   private extractCreateDirectoryHint(userMessage: string): string | null {
