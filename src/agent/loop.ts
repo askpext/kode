@@ -10,6 +10,12 @@ import { dirname, relative, resolve } from 'path';
 import { resolveDirectoryHint, resolveFlexiblePath } from '../tools/path.js';
 import { analyzeCodebase, isAnalysisIntent } from '../core/agent/analyze.js';
 import { countDirectoriesTool, formatCountDirectoriesResult } from '../tools/dir.js';
+import {
+  classifyDeterministicDomain,
+  detectDeterministicTask,
+  looksLikeDirectoryFollowup,
+  shouldUseOpenEndedLoop,
+} from '../core/agent/router.js';
 
 export interface AgentOptions {
   sessionId: string;
@@ -178,7 +184,7 @@ export class Agent {
       return analysisResponse;
     }
 
-    if (!this.shouldUseOpenEndedLoop(userMessage)) {
+    if (!shouldUseOpenEndedLoop(userMessage, this.lastMissingDirectoryHint)) {
       const deterministicFallbackResponse = await this.tryHandleDeterministicFallback(userMessage);
       if (deterministicFallbackResponse) {
         return deterministicFallbackResponse;
@@ -645,7 +651,7 @@ export class Agent {
   }
 
   private async tryHandleDeterministicFallback(userMessage: string): Promise<AgentResponse | null> {
-    const domain = this.classifyDeterministicDomain(userMessage);
+    const domain = classifyDeterministicDomain(userMessage, this.lastMissingDirectoryHint);
     if (!domain) {
       return null;
     }
@@ -673,10 +679,6 @@ export class Agent {
       content: response,
       done: true,
     };
-  }
-
-  private shouldUseOpenEndedLoop(userMessage: string): boolean {
-    return this.classifyDeterministicDomain(userMessage) === null;
   }
 
   private async tryHandleFailureFollowup(userMessage: string): Promise<AgentResponse | null> {
@@ -736,7 +738,7 @@ export class Agent {
       return null;
     }
 
-    if (!this.looksLikeDirectoryFollowup(trimmed)) {
+    if (!looksLikeDirectoryFollowup(trimmed)) {
       return null;
     }
 
@@ -1345,7 +1347,7 @@ Respond professionally like a developer tool, not a chatbot.`;
   }
 
   private async tryHandleTaskIntent(userMessage: string): Promise<AgentResponse | null> {
-    const task = this.detectDeterministicTask(userMessage);
+    const task = detectDeterministicTask(userMessage);
     if (!task) {
       return null;
     }
@@ -1534,44 +1536,6 @@ Respond professionally like a developer tool, not a chatbot.`;
     return targetPath;
   }
 
-  private detectDeterministicTask(userMessage: string): {
-    type: 'test' | 'build' | 'dev';
-    label: string;
-    successLabel: string;
-    background: boolean;
-  } | null {
-    const trimmed = userMessage.trim().toLowerCase();
-
-    if (/^(run|start|execute)?\s*(the\s+)?tests?\b|^test this\b|^check tests?\b/.test(trimmed)) {
-      return {
-        type: 'test',
-        label: 'tests',
-        successLabel: 'Tests',
-        background: false,
-      };
-    }
-
-    if (/^(run|start|execute)?\s*(the\s+)?build\b|^build (this|it|project|repo)?\b/.test(trimmed)) {
-      return {
-        type: 'build',
-        label: 'the build',
-        successLabel: 'Build',
-        background: false,
-      };
-    }
-
-    if (/^(run|start)\s+(the\s+)?(dev|development)\s+(server|mode)\b|^(run|start)\s+dev\b/.test(trimmed)) {
-      return {
-        type: 'dev',
-        label: 'the dev server',
-        successLabel: 'Dev server',
-        background: true,
-      };
-    }
-
-    return null;
-  }
-
   private resolveTaskCommand(task: { type: 'test' | 'build' | 'dev' }): string | null {
     const scripts = this.readPackageScripts();
     if (!scripts) {
@@ -1605,59 +1569,6 @@ Respond professionally like a developer tool, not a chatbot.`;
     } catch {
       return null;
     }
-  }
-
-  private classifyDeterministicDomain(userMessage: string): 'workspace' | 'directory' | 'file' | 'analysis' | 'task' | null {
-    const trimmed = userMessage.trim().toLowerCase();
-
-    if (this.looksLikeDirectoryFollowup(trimmed) && this.lastMissingDirectoryHint) {
-      return 'workspace';
-    }
-
-    if (/\b(analy[sz]e|inspect|review|summari[sz]e|understand)\b.*\b(codebase|repo|repository|project)\b/.test(trimmed)) {
-      return 'analysis';
-    }
-
-    if (/\b(run|start|execute|build|test|dev server|development server)\b/.test(trimmed)) {
-      return 'task';
-    }
-
-    if (/\b(read|show|view|replace|change)\b/.test(trimmed) && /\b(file|\.|readme|package\.json|tsconfig|note\.txt)\b/.test(trimmed)) {
-      return 'file';
-    }
-
-    if (/\b(go to|goto|switch to|move to|open|enter|use|workspace|path)\b/.test(trimmed) || /^[/~]/.test(trimmed)) {
-      return 'workspace';
-    }
-
-    if (/\b(dir|directory|folder|mkdir|count directories|count dirs|list directory)\b/.test(trimmed)) {
-      return 'directory';
-    }
-
-    return null;
-  }
-
-  private looksLikeDirectoryFollowup(input: string): boolean {
-    const trimmed = input.trim();
-    if (!trimmed || trimmed.length > 120) {
-      return false;
-    }
-
-    if (/["'`]/.test(trimmed)) {
-      return false;
-    }
-
-    if (/\b(make|create|read|show|replace|change|run|start|build|test|analy[sz]e)\b/i.test(trimmed)) {
-      return false;
-    }
-
-    if (/\s/.test(trimmed) && !/[\\/]/.test(trimmed)) {
-      return false;
-    }
-
-    return /^([A-Za-z0-9._~/-]+(?:\\[A-Za-z0-9._ -]+)*)$/.test(trimmed)
-      || /^[A-Za-z0-9._ -]+\/[A-Za-z0-9._ -]+$/.test(trimmed)
-      || /^[A-Za-z0-9._ -]+$/.test(trimmed);
   }
 
   getContextStatus() {
