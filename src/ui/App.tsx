@@ -339,6 +339,11 @@ Note: sarvam-m LLM is FREE.`,
         const response = await agent.run(value);
 
         if (response.toolCalls && response.toolCalls.length > 0) {
+          const assistantMessage =
+            response.content && response.content.trim().length > 0
+              ? { role: 'assistant' as const, content: response.content }
+              : null;
+
           // Handle tool calls that need permission
           const toolCallStates = createToolExecutionPlan(response.toolCalls).currentToolCalls as Array<{
             call: AgentToolCall;
@@ -355,9 +360,16 @@ Note: sarvam-m LLM is FREE.`,
             setState((prev) => ({
               ...prev,
               mode: permissionPlan.pendingDiff ? 'diff' : 'permission',
+              messages: assistantMessage ? [...prev.messages, assistantMessage] : prev.messages,
               currentToolCalls: permissionPlan.currentToolCalls as typeof prev.currentToolCalls,
               pendingDiff: permissionPlan.pendingDiff,
               pendingPermission: permissionPlan.pendingPermission || null,
+              statusLine: buildStatusLine(
+                prev.currentModel || model,
+                'awaiting approval',
+                agent.getCwd(),
+                sessionId
+              ),
             }));
             return;
           }
@@ -365,6 +377,7 @@ Note: sarvam-m LLM is FREE.`,
           // Execute tools without permission
           setState((prev) => ({
             ...prev,
+            messages: assistantMessage ? [...prev.messages, assistantMessage] : prev.messages,
             currentToolCalls: toolCallStates,
           }));
 
@@ -409,10 +422,10 @@ Note: sarvam-m LLM is FREE.`,
           }));
         }
       } catch (error) {
-        setState((prev) => ({
-          ...prev,
-          mode: 'input',
-          error: error instanceof Error ? error.message : 'Unknown error',
+          setState((prev) => ({
+            ...prev,
+            mode: 'input',
+            error: error instanceof Error ? error.message : 'Unknown error',
           startTime: null,
         }));
       }
@@ -444,6 +457,7 @@ Note: sarvam-m LLM is FREE.`,
                 : tc
             ),
             pendingPermission: null,
+            statusLine: buildStatusLine(prev.currentModel || model, 'running approved action', agent.getCwd(), sessionId),
           }));
 
           await executeToolCalls(
@@ -471,9 +485,19 @@ Note: sarvam-m LLM is FREE.`,
               ...prev,
               mode: resumePlan.pendingDiff ? 'diff' : 'permission',
               todos,
+              messages:
+                agentResponse.content && agentResponse.content.trim().length > 0
+                  ? [...prev.messages, { role: 'assistant', content: agentResponse.content }]
+                  : prev.messages,
               currentToolCalls: resumePlan.currentToolCalls as typeof prev.currentToolCalls,
               pendingDiff: resumePlan.pendingDiff,
               pendingPermission: resumePlan.pendingPermission || null,
+              statusLine: buildStatusLine(
+                prev.currentModel || model,
+                'awaiting approval',
+                agent.getCwd(),
+                sessionId
+              ),
             }));
             return;
           }
@@ -493,15 +517,23 @@ Note: sarvam-m LLM is FREE.`,
           ...prev,
           mode: 'input',
           pendingPermission: null,
+          messages: [
+            ...prev.messages,
+            {
+              role: 'assistant',
+              content: 'Permission denied. I did not run that action.',
+            },
+          ],
           currentToolCalls: currentToolCalls.map((tc) =>
             tc.call.id === currentPendingPermission.toolCall.id
               ? { ...tc, status: 'error', error: 'Permission denied' }
               : tc
           ),
+          statusLine: buildStatusLine(prev.currentModel || model, 'ready', agent.getCwd(), sessionId),
         }));
       }
     },
-    [state.pendingPermission, state.currentToolCalls, agent, db, sessionId]
+    [state.pendingPermission, state.currentToolCalls, agent, db, sessionId, model]
   );
 
   // Handle keyboard input for permission prompts
@@ -808,6 +840,7 @@ Note: sarvam-m LLM is FREE.`,
               type={state.pendingPermission.type}
               command={state.pendingPermission.command}
               filePath={state.pendingPermission.filePath}
+              toolName={state.pendingPermission.toolCall.name}
               onConfirm={handlePermissionResponse}
             />
           )}

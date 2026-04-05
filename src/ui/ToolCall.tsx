@@ -18,6 +18,16 @@ function getProgressMessage(name: string, args: Record<string, unknown>, status:
   const pattern = (args.pattern as string) || '';
 
   switch (name) {
+    case 'create_directory':
+      if (status === 'running' || status === 'pending') return `Creating directory ${path || 'folder'}...`;
+      if (status === 'done') return `Created directory ${path || 'folder'}`;
+      return `Failed to create directory ${path || 'folder'}`;
+
+    case 'count_directories':
+      if (status === 'running' || status === 'pending') return `Counting directories in ${path || 'workspace'}...`;
+      if (status === 'done') return `Counted directories in ${path || 'workspace'}`;
+      return `Failed to count directories in ${path || 'workspace'}`;
+
     case 'read_file':
       if (status === 'running' || status === 'pending') return `Reading ${path || 'file'}...`;
       if (status === 'done') return `Read ${path || 'file'}`;
@@ -38,6 +48,17 @@ function getProgressMessage(name: string, args: Record<string, unknown>, status:
       if (status === 'running' || status === 'pending') return `Running: ${cmdPreview}`;
       if (status === 'done') return `Completed: ${cmdPreview}`;
       return `Failed: ${cmdPreview}`;
+
+    case 'bash_background':
+      const bgPreview = command.slice(0, 30) + (command.length > 30 ? '...' : '');
+      if (status === 'running' || status === 'pending') return `Starting background task: ${bgPreview}`;
+      if (status === 'done') return `Started background task: ${bgPreview}`;
+      return `Failed to start background task: ${bgPreview}`;
+
+    case 'bash_status':
+      if (status === 'running' || status === 'pending') return 'Checking background task...';
+      if (status === 'done') return 'Updated background task status';
+      return 'Failed to read background task status';
 
     case 'grep':
       if (status === 'running' || status === 'pending') return `Searching for "${pattern}"...`;
@@ -63,12 +84,15 @@ function getSpinnerType(name: string, status: ToolStatus): 'dots' | 'star' | 'tr
     case 'read_file':
       return 'dots';
     case 'write_file':
+    case 'create_directory':
       return 'star';
     case 'edit_file':
       return 'triangle';
     case 'bash':
+    case 'bash_background':
       return 'dots';
     case 'grep':
+    case 'count_directories':
       return 'simpleDots';
     default:
       return 'dots';
