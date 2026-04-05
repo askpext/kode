@@ -612,4 +612,43 @@ describe('Agent workspace flow', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('normalizes simple bash mkdir tool calls into create_directory before permission handling', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-normalize-mkdir-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      vi.spyOn(agent as unknown as { callLLM: () => Promise<string | null> }, 'callLLM')
+        .mockResolvedValueOnce('tool_call:{"name":"bash","args":{"command":"mkdir -p sandbox"}}');
+
+      const response = await agent.run('help me set up a sandbox');
+
+      expect(response.done).toBe(false);
+      expect(response.toolCalls?.[0]).toMatchObject({
+        name: 'create_directory',
+        args: { path: 'sandbox' },
+      });
+    } finally {
+      vi.restoreAllMocks();
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

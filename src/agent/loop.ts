@@ -201,7 +201,7 @@ export class Agent {
         };
       }
 
-      const toolCalls = this.parseToolCalls(response);
+      const toolCalls = this.normalizeToolCalls(this.parseToolCalls(response));
 
       // Clean up tool call tags from the displayed content 
       const cleanContent = this.stripToolCallContent(response);
@@ -471,7 +471,7 @@ export class Agent {
         return { content: 'Error: Failed to get response from LLM', done: true };
       }
 
-      const toolCalls = this.parseToolCalls(response);
+      const toolCalls = this.normalizeToolCalls(this.parseToolCalls(response));
       const cleanContent = this.stripToolCallContent(response);
 
       if (toolCalls.length > 0) {
@@ -1004,6 +1004,62 @@ Respond professionally like a developer tool, not a chatbot.`;
     }
 
     return toolCalls;
+  }
+
+  private normalizeToolCalls(toolCalls: ToolCall[]): ToolCall[] {
+    return toolCalls.map((toolCall) => {
+      const normalized = this.normalizeShellLikeToolCall(toolCall);
+      return normalized ?? toolCall;
+    });
+  }
+
+  private normalizeShellLikeToolCall(toolCall: ToolCall): ToolCall | null {
+    if (toolCall.name !== 'bash') {
+      return null;
+    }
+
+    const command = typeof toolCall.args.command === 'string' ? toolCall.args.command.trim() : '';
+    if (!command) {
+      return null;
+    }
+
+    const mkdirMatch = command.match(/^mkdir(?:\s+-p)?\s+(.+)$/);
+    if (mkdirMatch) {
+      return {
+        ...toolCall,
+        name: 'create_directory',
+        args: {
+          path: this.stripShellQuotes(mkdirMatch[1].trim()),
+        },
+      };
+    }
+
+    const lsMatch = command.match(/^ls(?:\s+-[A-Za-z]+)*\s*(.*)$/);
+    if (lsMatch) {
+      const path = this.stripShellQuotes(lsMatch[1].trim());
+      return {
+        ...toolCall,
+        name: 'list_dir',
+        args: path ? { path } : {},
+      };
+    }
+
+    const catMatch = command.match(/^cat\s+(.+)$/);
+    if (catMatch) {
+      return {
+        ...toolCall,
+        name: 'read_file',
+        args: {
+          path: this.stripShellQuotes(catMatch[1].trim()),
+        },
+      };
+    }
+
+    return null;
+  }
+
+  private stripShellQuotes(value: string): string {
+    return value.replace(/^['"]|['"]$/g, '');
   }
 
   private parseXmlToolArgs(toolBlock: string): Record<string, string> {

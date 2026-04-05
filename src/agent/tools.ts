@@ -468,6 +468,14 @@ export class ToolExecutor {
     const { bashTool, formatBashResult } = await import('../tools/bash.js');
     const args = toolCall.args as { command: string };
 
+    const redirectedTool = this.detectBuiltInAlternative(args.command);
+    if (redirectedTool) {
+      return {
+        success: false,
+        result: redirectedTool,
+      };
+    }
+
     // Check permission
     const permission = await this.checkPermission('bash');
     if (!permission.granted) {
@@ -484,6 +492,24 @@ export class ToolExecutor {
       success: result.success,
       result: formatBashResult(result),
     };
+  }
+
+  private detectBuiltInAlternative(command: string): string | null {
+    const trimmed = command.trim();
+
+    if (/^mkdir(?:\s+-p)?\s+/.test(trimmed)) {
+      return 'Use create_directory instead of bash mkdir for simple directory creation.';
+    }
+
+    if (/^ls(?:\s|$)/.test(trimmed)) {
+      return 'Use list_dir instead of bash ls for directory listing.';
+    }
+
+    if (/^cat\s+/.test(trimmed)) {
+      return 'Use read_file instead of bash cat for reading files.';
+    }
+
+    return null;
   }
 
   private async executeGrep(
