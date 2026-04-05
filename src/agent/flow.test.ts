@@ -460,4 +460,84 @@ describe('Agent workspace flow', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('routes test requests into a deterministic bash command', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-task-test-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+    await writeFile(
+      join(kodeDir, 'package.json'),
+      JSON.stringify({ name: 'kode', scripts: { test: 'vitest run' } }),
+      'utf-8'
+    );
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const response = await agent.run('run tests');
+
+      expect(response.done).toBe(false);
+      expect(response.toolCalls?.[0]).toMatchObject({
+        name: 'bash',
+        args: { command: 'npm test' },
+      });
+    } finally {
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('routes dev server requests into a deterministic background bash command', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-task-dev-'));
+    const kodeDir = join(root, 'kode');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+    await writeFile(
+      join(kodeDir, 'package.json'),
+      JSON.stringify({ name: 'kode', scripts: { dev: 'vite' } }),
+      'utf-8'
+    );
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const response = await agent.run('start dev server');
+
+      expect(response.done).toBe(false);
+      expect(response.toolCalls?.[0]).toMatchObject({
+        name: 'bash_background',
+        args: { command: 'npm run dev' },
+      });
+    } finally {
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

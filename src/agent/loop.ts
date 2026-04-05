@@ -5,7 +5,7 @@ import SessionDB from '../db/sessions.js';
 import { loadConfig, findAgentsFile, readAgentsFile } from '../config.js';
 import { getGitStatusString } from '../utils/git.js';
 import { platform } from 'os';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { dirname, relative, resolve } from 'path';
 import { resolveDirectoryHint, resolveFlexiblePath } from '../tools/path.js';
 import { analyzeCodebase, isAnalysisIntent } from '../core/agent/analyze.js';
@@ -139,6 +139,11 @@ export class Agent {
     const portfolioResponse = await this.tryHandlePortfolioIntent(userMessage);
     if (portfolioResponse) {
       return portfolioResponse;
+    }
+
+    const taskResponse = await this.tryHandleTaskIntent(userMessage);
+    if (taskResponse) {
+      return taskResponse;
     }
 
     const directoryCreationResponse = await this.tryHandleDirectoryCreationIntent(userMessage);
@@ -1155,6 +1160,57 @@ Respond professionally like a developer tool, not a chatbot.`;
     };
   }
 
+  private async tryHandleTaskIntent(userMessage: string): Promise<AgentResponse | null> {
+    const task = this.detectDeterministicTask(userMessage);
+    if (!task) {
+      return null;
+    }
+
+    const command = this.resolveTaskCommand(task);
+    if (!command) {
+      const response = `I couldn't find a clear ${task.label} command in this workspace.`;
+      this.lastFailureMessage = response;
+      this.contextManager.addMessage({ role: 'assistant', content: response });
+      await this.db.addMessage({
+        sessionId: this.sessionId,
+        role: 'assistant',
+        content: response,
+      });
+
+      return {
+        content: response,
+        done: true,
+      };
+    }
+
+    const toolCall: ToolCall = {
+      id: `deterministic_${task.type}`,
+      name: task.background ? 'bash_background' : 'bash',
+      args: {
+        command,
+      },
+    };
+
+    this.pendingDeterministicPermission = {
+      toolName: toolCall.name,
+      successMessage: task.background
+        ? `${task.successLabel} started with \`${command}\``
+        : `${task.successLabel} finished with \`${command}\``,
+      failureMessage: `I couldn't ${task.label} with \`${command}\`.`,
+    };
+
+    const response = task.background
+      ? `I can start ${task.label} with \`${command}\` as a tracked background process once you approve it.`
+      : `I can run ${task.label} with \`${command}\` once you approve it.`;
+
+    this.contextManager.addMessage({ role: 'assistant', content: response, toolCalls: [toolCall] });
+    return {
+      content: response,
+      toolCalls: [toolCall],
+      done: false,
+    };
+  }
+
   private async tryHandleDirectoryCountIntent(userMessage: string): Promise<AgentResponse | null> {
     const match = userMessage.trim().match(/(?:how many|count)\s+(?:directories|directory|dirs|dir)\s+(?:are there\s+)?(?:in\s+(.+))?\??$/i);
     if (!match) {
@@ -1203,8 +1259,11 @@ Respond professionally like a developer tool, not a chatbot.`;
       this.lastMissingDirectoryHint = null;
       this.recentNavigationAttempts = [];
       this.lastFailureMessage = null;
-      this.lastActionSummary = pending.successMessage;
       response = pending.successMessage;
+      if (permissionResult.result && pending.toolName === 'bash') {
+        response = `${pending.successMessage}\n\n${permissionResult.result}`;
+      }
+      this.lastActionSummary = response;
     } else {
       response = `${pending.failureMessage}\n\n${permissionResult.result}`;
       this.lastFailureMessage = response;
@@ -1273,6 +1332,79 @@ Respond professionally like a developer tool, not a chatbot.`;
     }
 
     return targetPath;
+  }
+
+  private detectDeterministicTask(userMessage: string): {
+    type: 'test' | 'build' | 'dev';
+    label: string;
+    successLabel: string;
+    background: boolean;
+  } | null {
+    const trimmed = userMessage.trim().toLowerCase();
+
+    if (/^(run|start|execute)?\s*(the\s+)?tests?\b|^test this\b|^check tests?\b/.test(trimmed)) {
+      return {
+        type: 'test',
+        label: 'tests',
+        successLabel: 'Tests',
+        background: false,
+      };
+    }
+
+    if (/^(run|start|execute)?\s*(the\s+)?build\b|^build (this|it|project|repo)?\b/.test(trimmed)) {
+      return {
+        type: 'build',
+        label: 'the build',
+        successLabel: 'Build',
+        background: false,
+      };
+    }
+
+    if (/^(run|start)\s+(the\s+)?(dev|development)\s+(server|mode)\b|^(run|start)\s+dev\b/.test(trimmed)) {
+      return {
+        type: 'dev',
+        label: 'the dev server',
+        successLabel: 'Dev server',
+        background: true,
+      };
+    }
+
+    return null;
+  }
+
+  private resolveTaskCommand(task: { type: 'test' | 'build' | 'dev' }): string | null {
+    const scripts = this.readPackageScripts();
+    if (!scripts) {
+      return null;
+    }
+
+    if (task.type === 'test' && scripts.test) {
+      return 'npm test';
+    }
+
+    if (task.type === 'build' && scripts.build) {
+      return 'npm run build';
+    }
+
+    if (task.type === 'dev' && scripts.dev) {
+      return 'npm run dev';
+    }
+
+    return null;
+  }
+
+  private readPackageScripts(): Record<string, string> | null {
+    const packageJsonPath = resolve(this.cwd, 'package.json');
+    if (!existsSync(packageJsonPath)) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { scripts?: Record<string, string> };
+      return parsed.scripts || null;
+    } catch {
+      return null;
+    }
   }
 
   getContextStatus() {
