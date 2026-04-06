@@ -1,7 +1,7 @@
 export type DeterministicDomain = 'workspace' | 'directory' | 'file' | 'analysis' | 'task';
 
 export interface DeterministicTask {
-  type: 'test' | 'build' | 'dev';
+  type: 'test' | 'build' | 'dev' | 'clone';
   label: string;
   successLabel: string;
   background: boolean;
@@ -60,6 +60,16 @@ export function detectDeterministicTask(userMessage: string): DeterministicTask 
     };
   }
 
+  // Git clone task
+  if (/\b(clone)\b.*\b(repo|repository|github|gitlab)\b/.test(trimmed) || /^clone\s+https?:\/\//.test(trimmed)) {
+    return {
+      type: 'clone',
+      label: 'the repository clone',
+      successLabel: 'Clone',
+      background: false,
+    };
+  }
+
   return null;
 }
 
@@ -68,6 +78,11 @@ export function classifyDeterministicDomain(
   lastMissingDirectoryHint: string | null
 ): DeterministicDomain | null {
   const trimmed = userMessage.trim().toLowerCase();
+
+  // Clone repo - should trigger bash git clone, not directory search
+  if (/\b(clone)\b.*\b(repo|repository|github|gitlab)\b/.test(trimmed) || /^clone\s+https?:\/\//.test(trimmed)) {
+    return 'task';
+  }
 
   if (looksLikeDirectoryFollowup(trimmed) && lastMissingDirectoryHint) {
     return 'workspace';
@@ -81,11 +96,18 @@ export function classifyDeterministicDomain(
     return 'task';
   }
 
-  if (/\b(read|show|view|replace|change)\b/.test(trimmed) && /\b(file|\.|readme|package\.json|tsconfig|note\.txt)\b/.test(trimmed)) {
+  // Read/view/check file - should trigger read_file, not directory search
+  if (/\b(read|show|view|check|open)\b.*\b(file|\.|readme|package\.json|tsconfig|note\.txt|src\/|\.ts|\.js|\.tsx|\.py|\.md)\b/.test(trimmed)) {
     return 'file';
   }
 
-  if (/\b(go to|goto|switch to|move to|open|enter|use|workspace|path)\b/.test(trimmed) || /^[/~]/.test(trimmed)) {
+  // Go to dir / cd / explicit workspace references - should trigger workspace change
+  if (/\b(go to|goto|switch to|move to|enter|change directory)\b/.test(trimmed) || /^[/~]/.test(trimmed)) {
+    return 'workspace';
+  }
+
+  // Vague workspace/path references (e.g., "workspace path?", "use /some/path")
+  if (/\b(workspace|path)\b/.test(trimmed) && !/\b(file|read|write|edit|code)\b/.test(trimmed)) {
     return 'workspace';
   }
 

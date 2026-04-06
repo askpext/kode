@@ -277,6 +277,20 @@ export class Agent {
             result: result.result,
             isError: !result.success,
           });
+
+          // If bash clone succeeded, check if directory was created
+          if (result.success && toolCall.name === 'bash' && typeof toolCall.args.command === 'string' && toolCall.args.command.startsWith('git clone')) {
+            const repoNameMatch = toolCall.args.command.match(/git clone\s+\S+\s+(\S+)/);
+            const targetDir = repoNameMatch ? repoNameMatch[1] : null;
+            if (targetDir) {
+              const { existsSync } = await import('fs');
+              const { resolve } = await import('path');
+              const fullPath = resolve(this.cwd, targetDir);
+              if (existsSync(fullPath)) {
+                toolResults[toolResults.length - 1].result += `\n\n✓ Directory created: ${fullPath}`;
+              }
+            }
+          }
         }
 
         // If we broke out due to retry, continue to next iteration
@@ -799,8 +813,20 @@ export class Agent {
     const trimmed = userMessage.trim();
     const normalized = trimmed.replace(/^(?:hey|hi|hello|please|bro+|okay|ok)\s+/i, '');
     const politeNormalized = normalized.replace(/^(?:can you|could you|would you)\s+/i, '');
+
+    // Don't extract directory hints from file-related commands
+    if (/\b(check|read|view|show|inspect)\s+(its|the|this)\s+(file|package\.json|readme|code|content)/i.test(trimmed)) {
+      return null;
+    }
+
+    // Don't extract directory hints from git clone commands
+    if (/\b(clone)\b.*\b(repo|repository|github|gitlab)\b/i.test(trimmed) || /^clone\s+https?:\/\//i.test(trimmed)) {
+      return null;
+    }
+
+    // Don't extract directory hints from "check in" patterns that are actually file checks
     const checkInMatch = trimmed.match(/(?:^|\b)(?:check in|look in)\s+(.+?)$/i);
-    if (checkInMatch) {
+    if (checkInMatch && !/\b(file|code|content|package)\b/i.test(checkInMatch[1])) {
       return checkInMatch[1].trim();
     }
 
@@ -814,9 +840,16 @@ export class Agent {
       return directDirectoryMatch[1].trim();
     }
 
-    const navigationMatch = politeNormalized.match(/(?:^|\b)(?:go to|goto|switch to|move to|open|enter|use|check)\s+(.+?)(?:\s+(?:dir|directory|folder))?$/i);
+    // Only match navigation if it explicitly mentions directory/folder, not just "go to X"
+    const navigationMatch = politeNormalized.match(/(?:^|\b)(?:go to|goto|switch to|move to|enter)\s+(.+?)\s+(?:dir|directory|folder)$/i);
     if (navigationMatch) {
       return navigationMatch[1].trim();
+    }
+
+    // Handle vague workspace/path references
+    const workspacePathMatch = politeNormalized.match(/(?:^|\b)(workspace|path)\??\s*$/i);
+    if (workspacePathMatch && this.lastMissingDirectoryHint) {
+      return this.lastMissingDirectoryHint;
     }
 
     const namedDirectoryMatch = politeNormalized.match(/(?:^|\b)(?:explore|inspect|open|use)\s+(?:a\s+)?(?:dir|directory|folder)\s+named\s+(.+?)$/i);
@@ -1536,7 +1569,23 @@ Respond professionally like a developer tool, not a chatbot.`;
     return targetPath;
   }
 
-  private resolveTaskCommand(task: { type: 'test' | 'build' | 'dev' }): string | null {
+  private resolveTaskCommand(task: { type: 'test' | 'build' | 'dev' | 'clone' }): string | null {
+    if (task.type === 'clone') {
+      // Extract URL from the last user message for clone tasks
+      const lastMessage = this.contextManager.getMessagesForApi().pop();
+      if (lastMessage?.role === 'user') {
+        const urlMatch = lastMessage.content.match(/(https?:\/\/[^\s]+)/);
+        if (urlMatch) {
+          const url = urlMatch[1];
+          // Extract repo name from URL for target directory
+          const repoNameMatch = url.match(/\/([^/]+?)(?:\.git)?$/);
+          const targetDir = repoNameMatch ? repoNameMatch[1] : 'repo';
+          return `git clone ${url} ${targetDir}`;
+        }
+      }
+      return null;
+    }
+
     const scripts = this.readPackageScripts();
     if (!scripts) {
       return null;
