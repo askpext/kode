@@ -139,6 +139,15 @@ Kode automatically reads `AGENTS.md` or `CLAUDE.md` from your project root and a
 - **Shell**: execa
 - **Config**: cosmiconfig
 
+## Documentation
+
+- [Slash Commands Reference](docs/commands.md)
+- [Architecture Overview](docs/architecture.md)
+- [Configuration Guide](docs/configuration.md)
+- [Agent Behavior Guide](docs/agent-behavior.md)
+- [Contributing Guidelines](docs/contributing.md)
+- [Usage Examples](docs/examples.md)
+
 ## License
 
 MIT License - See [LICENSE](LICENSE) for details.
