@@ -394,21 +394,15 @@ export function classifyDeterministicDomain(
     return 'workspace';
   }
 
-  if (/\b(analy[sz]e|inspect|review|summari[sz]e|understand)\b.*\b(codebase|repo|repository|project)\b/.test(trimmed)) {
+  // Analyze/inspect code - catch BEFORE workspace/navigation checks
+  // Broader pattern: "analyze X", "inspect X dir", "review the project" etc.
+  if (/\b(analy[sz]e|inspect|review|summari[sz]e|understand)\b/i.test(trimmed)) {
     return 'analysis';
   }
 
-  if (/\b(run|start|execute|build|test|dev server|development server)\b/.test(trimmed)) {
-    return 'task';
-  }
-
-  // Read/view/check file - should trigger read_file, not directory search
-  if (/\b(read|show|view|check|open)\b.*\b(file|\.|readme|package\.json|tsconfig|note\.txt|src\/|\.ts|\.js|\.tsx|\.py|\.md)\b/.test(trimmed)) {
-    return 'file';
-  }
-
   // Go to dir / cd / explicit workspace references - should trigger workspace change
-  if (/\b(go to|goto|switch to|move to|enter|change directory)\b/.test(trimmed) || /^[/~]/.test(trimmed)) {
+  // Added 'visit', 'explore' as navigation verbs
+  if (/\b(go to|goto|switch to|move to|enter|change directory|visit|explore)\b/.test(trimmed) || /^[/~]/.test(trimmed)) {
     return 'workspace';
   }
 
@@ -417,7 +411,17 @@ export function classifyDeterministicDomain(
     return 'workspace';
   }
 
-  if (/\b(dir|directory|folder|mkdir|count directories|count dirs|list directory)\b/.test(trimmed)) {
+  // Read/view/check file - should trigger read_file, not directory search
+  if (/\b(read|show|view|check|open)\b.*\b(file|\.|readme|package\.json|tsconfig|note\.txt|src\/|\.ts|\.js|\.tsx|\.py|\.md)\b/.test(trimmed)) {
+    return 'file';
+  }
+
+  if (/\b(run|start|execute|build|test|dev server|development server)\b/.test(trimmed)) {
+    return 'task';
+  }
+
+  // Directory-specific operations only (list, count, create) - NOT general mentions of "dir"
+  if (/\b(list directory|list dir|count directories?|count dirs?|mkdir|make directory|create directory|create folder)\b/.test(trimmed)) {
     return 'directory';
   }
 

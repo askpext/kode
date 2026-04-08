@@ -82,7 +82,9 @@ describe('router helpers', () => {
   it('classifies deterministic domains', () => {
     expect(classifyDeterministicDomain('read README.md', null)).toBe('file');
     expect(classifyDeterministicDomain('analyze this repo', null)).toBe('analysis');
+    expect(classifyDeterministicDomain('analyze the Lowkey dir', null)).toBe('analysis');
     expect(classifyDeterministicDomain('go to lowkey dir', null)).toBe('workspace');
+    expect(classifyDeterministicDomain('visit that dir', 'Lowkey')).toBe('workspace');
     expect(classifyDeterministicDomain('run tests', null)).toBe('task');
     expect(classifyDeterministicDomain('create folder docs', null)).toBe('directory');
     expect(classifyDeterministicDomain('delete lowkey directory', null)).toBe('task');
