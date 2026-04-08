@@ -8,6 +8,7 @@ describe('isAnalysisIntent', () => {
   it('recognizes direct codebase analysis requests', () => {
     expect(isAnalysisIntent('analyze its codebase')).toBe(true);
     expect(isAnalysisIntent('review this repo')).toBe(true);
+    expect(isAnalysisIntent('analyze the Lowkey dir')).toBe(true);
     expect(isAnalysisIntent('go to lowkey dir')).toBe(false);
   });
 });

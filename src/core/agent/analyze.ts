@@ -49,6 +49,7 @@ export function isAnalysisIntent(input: string): boolean {
   }
 
   return /^(analy[sz]e|inspect|review|understand|summari[sz]e)\b.*\b(codebase|repo|repository|project)\b/.test(trimmed)
+    || /^(analy[sz]e|inspect|review|understand|summari[sz]e)\b.*\b(dir|directory|folder)\b/.test(trimmed)
     || /^(analy[sz]e|inspect|review|understand)\s+(it|this|its)\b/.test(trimmed)
     || /^(what does|how is)\s+this\s+(repo|project|codebase)\b/.test(trimmed);
 }

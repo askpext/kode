@@ -48,6 +48,7 @@ export class Agent {
   private lastPermissionResult: { toolName: string; success: boolean; result: string } | null = null;
   private lastActionSummary: string | null = null;
   private lastBackgroundProcess: { id: string; command: string } | null = null;
+  private lastReferencedDirectory: string | null = null;
   private pendingDeterministicPermission:
     | {
         toolName: string;
@@ -55,6 +56,7 @@ export class Agent {
         failureMessage: string;
         nextCwd?: string;
         backgroundCommand?: string;
+        targetDirectory?: string;
       }
     | null = null;
 
@@ -576,6 +578,10 @@ export class Agent {
   }
 
   private async tryHandleNavigationIntent(userMessage: string): Promise<AgentResponse | null> {
+    if (isAnalysisIntent(userMessage)) {
+      return null;
+    }
+
     const hint = this.extractDirectoryHint(userMessage);
     if (!hint) {
       return null;
@@ -592,6 +598,7 @@ export class Agent {
       const nextCwd = resolution.matches[0];
       this.recentNavigationAttempts = [];
       this.lastMissingDirectoryHint = null;
+      this.lastReferencedDirectory = nextCwd;
       await this.setCwd(nextCwd);
 
       const response = `Switched workspace to ${nextCwd}\nI can analyze this codebase, inspect files, or make changes here now.`;
@@ -649,8 +656,12 @@ export class Agent {
       return null;
     }
 
-    const response = await analyzeCodebase(this.cwd);
+    const targetDirectory = this.extractAnalysisTargetDirectory(userMessage);
+    const response = await analyzeCodebase(targetDirectory || this.cwd);
     this.lastFailureMessage = null;
+    this.lastActionSummary = targetDirectory
+      ? `Analyzed ${targetDirectory}`
+      : `Analyzed ${this.cwd}`;
     this.contextManager.addMessage({ role: 'assistant', content: response });
     await this.db.addMessage({
       sessionId: this.sessionId,
@@ -743,13 +754,22 @@ export class Agent {
   }
 
   private async tryHandleDeterministicFollowupIntent(userMessage: string): Promise<AgentResponse | null> {
-    if (!this.lastMissingDirectoryHint) {
+    if (isAnalysisIntent(userMessage)) {
+      return null;
+    }
+
+    if (!this.lastMissingDirectoryHint && !this.lastReferencedDirectory) {
       return null;
     }
 
     const trimmed = userMessage.trim();
     if (!trimmed || /\s{2,}/.test(trimmed)) {
       return null;
+    }
+
+    const directReference = this.extractDirectDirectoryReference(trimmed);
+    if (directReference) {
+      return this.tryHandleNavigationHint(directReference);
     }
 
     if (!looksLikeDirectoryFollowup(trimmed)) {
@@ -813,6 +833,10 @@ export class Agent {
     const trimmed = userMessage.trim();
     const normalized = trimmed.replace(/^(?:hey|hi|hello|please|bro+|okay|ok)\s+/i, '');
     const politeNormalized = normalized.replace(/^(?:can you|could you|would you)\s+/i, '');
+    const directReference = this.extractDirectDirectoryReference(politeNormalized);
+    if (directReference) {
+      return directReference;
+    }
 
     // Don't extract directory hints from file-related commands
     if (/\b(check|read|view|show|inspect)\s+(its|the|this)\s+(file|package\.json|readme|code|content)/i.test(trimmed)) {
@@ -1421,6 +1445,7 @@ Respond professionally like a developer tool, not a chatbot.`;
           ? `I couldn't delete with \`${command}\`.`
           : `I couldn't run ${task.label} with \`${command}\`.`,
       backgroundCommand: task.background ? command : undefined,
+      targetDirectory: this.resolveTaskDirectory(task, command),
     };
 
     const response = task.background
@@ -1485,6 +1510,9 @@ Respond professionally like a developer tool, not a chatbot.`;
       this.lastMissingDirectoryHint = null;
       this.recentNavigationAttempts = [];
       this.lastFailureMessage = null;
+      if (pending.nextCwd) {
+        this.lastReferencedDirectory = pending.nextCwd;
+      }
       response = pending.successMessage;
       if (permissionResult.result && pending.toolName === 'bash') {
         response = `${pending.successMessage}\n\n${permissionResult.result}`;
@@ -1498,6 +1526,9 @@ Respond professionally like a developer tool, not a chatbot.`;
           };
           response = `${pending.successMessage}\n\nProcess ID: ${backgroundId}`;
         }
+      }
+      if (pending.toolName === 'bash' && pending.targetDirectory) {
+        this.lastReferencedDirectory = pending.targetDirectory;
       }
       this.lastActionSummary = response;
     } else {
@@ -1522,6 +1553,47 @@ Respond professionally like a developer tool, not a chatbot.`;
   private extractBackgroundProcessId(result: string): string | null {
     const match = result.match(/ID:\s*([a-zA-Z0-9-]+)/i);
     return match ? match[1] : null;
+  }
+
+  private extractDirectDirectoryReference(input: string): string | null {
+    const trimmed = input.trim();
+
+    if (/^(that|this)\s+(dir|directory|folder|repo|repository)$/i.test(trimmed)) {
+      return this.lastReferencedDirectory;
+    }
+
+    const namedReferenceMatch = trimmed.match(/^(?:go to|goto|visit|open|analy[sz]e|inspect)\s+(?:the\s+)?(.+?)\s+(?:dir|directory|folder|repo|repository)$/i);
+    if (namedReferenceMatch) {
+      const name = namedReferenceMatch[1].trim();
+      if (/^(that|this)$/i.test(name)) {
+        return this.lastReferencedDirectory;
+      }
+
+      if (this.lastReferencedDirectory && this.lastReferencedDirectory.toLowerCase().includes(name.toLowerCase())) {
+        return this.lastReferencedDirectory;
+      }
+    }
+
+    return null;
+  }
+
+  private extractAnalysisTargetDirectory(userMessage: string): string | null {
+    const directReference = this.extractDirectDirectoryReference(userMessage);
+    if (directReference) {
+      return directReference;
+    }
+
+    const directoryHint = this.extractDirectoryHint(userMessage);
+    if (!directoryHint || directoryHint === this.lastMissingDirectoryHint) {
+      return null;
+    }
+
+    const resolution = resolveDirectoryHint(this.cwd, directoryHint);
+    if (resolution.matches.length === 1) {
+      return resolution.matches[0];
+    }
+
+    return null;
   }
 
   private extractCreateDirectoryHint(userMessage: string): string | null {
@@ -1880,6 +1952,19 @@ Respond professionally like a developer tool, not a chatbot.`;
     }
 
     return null;
+  }
+
+  private resolveTaskDirectory(task: { type: string }, command: string): string | undefined {
+    if (task.type !== 'clone') {
+      return undefined;
+    }
+
+    const match = command.match(/git clone\s+\S+\s+("?)([^"\s]+)\1$/);
+    if (!match) {
+      return undefined;
+    }
+
+    return resolve(this.cwd, match[2]);
   }
 
   private readPackageScripts(): Record<string, string> | null {
