@@ -257,6 +257,7 @@ export class Agent {
           const requiresPermission = ['bash', 'write_file', 'edit_file', 'create_directory'].includes(toolCall.name);
 
           if (requiresPermission) {
+            this.ensureGenericPermissionCompletion(toolCalls, cleanContent);
             return {
               content: cleanContent,
               toolCalls,
@@ -536,6 +537,7 @@ export class Agent {
         );
 
         if (requiresPermission) {
+          this.ensureGenericPermissionCompletion(toolCalls, cleanContent);
           this.contextManager.addMessage({ role: 'assistant', content: response, toolCalls });
           return { content: cleanContent, toolCalls, done: false };
         }
@@ -580,6 +582,11 @@ export class Agent {
   private async tryHandleNavigationIntent(userMessage: string): Promise<AgentResponse | null> {
     if (isAnalysisIntent(userMessage)) {
       return null;
+    }
+
+    const directReference = this.extractDirectDirectoryReference(userMessage);
+    if (directReference) {
+      return this.tryHandleNavigationHint(directReference);
     }
 
     const hint = this.extractDirectoryHint(userMessage);
@@ -1064,7 +1071,7 @@ Respond professionally like a developer tool, not a chatbot.`;
 
     while ((match = toolCallPattern.exec(content)) !== null) {
       try {
-        const parsed = this.parseToolCallJSON(match[1]);
+        const parsed = this.normalizeParsedToolCall(this.parseToolCallJSON(match[1]));
         if (parsed && this.validateToolCall(parsed)) {
           const signature = `${parsed.name}:${JSON.stringify(parsed.args)}`;
           if (!seenSignatures.has(signature)) {
@@ -1085,7 +1092,7 @@ Respond professionally like a developer tool, not a chatbot.`;
     const jsonPattern = /\{[\s\S]*?"name"[\s\S]*?"args"[\s\S]*?\}/g;
     while ((match = jsonPattern.exec(content)) !== null) {
       try {
-        const parsed = JSON.parse(match[0]);
+        const parsed = this.normalizeParsedToolCall(JSON.parse(match[0]));
         if (parsed.name && typeof parsed.name === 'string') {
           const signature = `${parsed.name}:${JSON.stringify(parsed.args || {})}`;
           if (!seenSignatures.has(signature)) {
@@ -1109,7 +1116,7 @@ Respond professionally like a developer tool, not a chatbot.`;
 
       if (toolBlock.startsWith('{')) {
         try {
-          const parsed = this.parseToolCallJSON(toolBlock);
+          const parsed = this.normalizeParsedToolCall(this.parseToolCallJSON(toolBlock));
           if (parsed && this.validateToolCall(parsed)) {
             const signature = `${parsed.name}:${JSON.stringify(parsed.args)}`;
             if (!seenSignatures.has(signature)) {
@@ -1130,7 +1137,7 @@ Respond professionally like a developer tool, not a chatbot.`;
       const toolNameMatch = toolBlock.match(/^([a-zA-Z0-9_\-]+)/);
       if (toolNameMatch) {
         const toolName = toolNameMatch[1].trim();
-        const args = this.parseXmlToolArgs(toolBlock);
+        const args = this.normalizeToolArgs(toolName, this.parseXmlToolArgs(toolBlock));
 
         if (this.validateToolCall({ name: toolName, args })) {
           const signature = `${toolName}:${JSON.stringify(args)}`;
@@ -1151,9 +1158,52 @@ Respond professionally like a developer tool, not a chatbot.`;
 
   private normalizeToolCalls(toolCalls: ToolCall[]): ToolCall[] {
     return toolCalls.map((toolCall) => {
-      const normalized = this.normalizeShellLikeToolCall(toolCall);
-      return normalized ?? toolCall;
+      const canonicalToolCall: ToolCall = {
+        ...toolCall,
+        args: this.normalizeToolArgs(toolCall.name, toolCall.args),
+      };
+      const normalized = this.normalizeShellLikeToolCall(canonicalToolCall);
+      return normalized ?? canonicalToolCall;
     });
+  }
+
+  private normalizeParsedToolCall(
+    parsed: { name: string; args: Record<string, unknown> } | null
+  ): { name: string; args: Record<string, unknown> } | null {
+    if (!parsed) {
+      return null;
+    }
+
+    return {
+      name: parsed.name,
+      args: this.normalizeToolArgs(parsed.name, parsed.args),
+    };
+  }
+
+  private normalizeToolArgs(name: string, args: Record<string, unknown>): Record<string, unknown> {
+    if (name !== 'edit_file') {
+      return args;
+    }
+
+    return {
+      ...args,
+      target:
+        typeof args.target === 'string'
+          ? args.target
+          : typeof args.old_string === 'string'
+            ? args.old_string
+            : typeof args.oldText === 'string'
+              ? args.oldText
+              : args.target,
+      replacement:
+        typeof args.replacement === 'string'
+          ? args.replacement
+          : typeof args.new_string === 'string'
+            ? args.new_string
+            : typeof args.newText === 'string'
+              ? args.newText
+              : args.replacement,
+    };
   }
 
   private normalizeShellLikeToolCall(toolCall: ToolCall): ToolCall | null {
@@ -1332,12 +1382,12 @@ Respond professionally like a developer tool, not a chatbot.`;
   }
 
   private async tryHandleReadFileIntent(userMessage: string): Promise<AgentResponse | null> {
-    const match = userMessage.trim().match(/^(?:read|show|view)\s+(?:the\s+)?(?:file\s+)?(.+?)\??$/i);
+    const match = userMessage.trim().match(/^(?:read|show|view)\s+(?:me\s+)?(?:the\s+)?(?:file\s+)?(.+?)\??$/i);
     if (!match) {
       return null;
     }
 
-    const path = match[1].trim().replace(/^["']|["']$/g, '');
+    const path = this.normalizeCommonFileReference(match[1].trim().replace(/^["']|["']$/g, ''));
     if (!path || /^(file|a file|the file)$/i.test(path) || /\b(codebase|repo|project)\b/i.test(path)) {
       return null;
     }
@@ -1572,6 +1622,41 @@ Respond professionally like a developer tool, not a chatbot.`;
     };
   }
 
+  private ensureGenericPermissionCompletion(toolCalls: ToolCall[], cleanContent: string): void {
+    if (this.pendingDeterministicPermission || toolCalls.length !== 1) {
+      return;
+    }
+
+    const [toolCall] = toolCalls;
+    const path = typeof toolCall.args.path === 'string' ? toolCall.args.path : null;
+
+    if (toolCall.name === 'edit_file' && path) {
+      this.pendingDeterministicPermission = {
+        toolName: 'edit_file',
+        successMessage: cleanContent || `Updated ${path}`,
+        failureMessage: `I couldn't update ${path}.`,
+      };
+      return;
+    }
+
+    if (toolCall.name === 'write_file' && path) {
+      this.pendingDeterministicPermission = {
+        toolName: 'write_file',
+        successMessage: cleanContent || `Wrote ${path}`,
+        failureMessage: `I couldn't write ${path}.`,
+      };
+      return;
+    }
+
+    if (toolCall.name === 'create_directory' && path) {
+      this.pendingDeterministicPermission = {
+        toolName: 'create_directory',
+        successMessage: cleanContent || `Created directory: ${path}`,
+        failureMessage: `I couldn't create ${path}.`,
+      };
+    }
+  }
+
   private extractBackgroundProcessId(result: string): string | null {
     const match = result.match(/ID:\s*([a-zA-Z0-9-]+)/i);
     return match ? match[1] : null;
@@ -1579,6 +1664,10 @@ Respond professionally like a developer tool, not a chatbot.`;
 
   private extractDirectDirectoryReference(input: string): string | null {
     const trimmed = input.trim().replace(/^(?:good|okay|ok|please|bro+)\s+/i, '');
+
+    if (/^(?:there|here)$/.test(trimmed.toLowerCase())) {
+      return this.lastReferencedDirectory ?? this.cwd;
+    }
 
     if (/^(that|this)\s+(dir|directory|folder|repo|repository)$/i.test(trimmed)) {
       return this.lastReferencedDirectory;
@@ -1596,7 +1685,27 @@ Respond professionally like a developer tool, not a chatbot.`;
       }
     }
 
+    if (/^(?:go(?:\s+to)?|goto|visit|open|inspect|analy[sz]e)\s+(?:there|here)$/i.test(trimmed)) {
+      return this.lastReferencedDirectory ?? this.cwd;
+    }
+
     return null;
+  }
+
+  private normalizeCommonFileReference(path: string): string {
+    const normalized = path.trim().replace(/\s+/g, ' ').toLowerCase();
+
+    if (normalized === 'package json') {
+      return 'package.json';
+    }
+    if (normalized === 'tsconfig json') {
+      return 'tsconfig.json';
+    }
+    if (normalized === 'readme') {
+      return 'README.md';
+    }
+
+    return path;
   }
 
   private extractAnalysisTargetDirectory(userMessage: string): string | null {

@@ -402,7 +402,7 @@ export function classifyDeterministicDomain(
 
   // Go to dir / cd / explicit workspace references - should trigger workspace change
   // Added 'visit', 'explore' as navigation verbs
-  if (/\b(go to|goto|switch to|move to|enter|change directory|visit|explore)\b/.test(trimmed) || /^[/~]/.test(trimmed)) {
+  if (/\b(go to|goto|go there|go here|switch to|move to|enter|change directory|visit|explore)\b/.test(trimmed) || /^[/~]/.test(trimmed)) {
     return 'workspace';
   }
 

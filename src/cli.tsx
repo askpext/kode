@@ -44,8 +44,6 @@ async function launchApp(apiKey: string, baseUrl: string, model: string, args: C
 }
 
 async function main() {
-  assertSupportedRuntimePlatform();
-
   const args = parseArgs();
 
   if (args.help) {
@@ -56,6 +54,13 @@ async function main() {
   if (args.version) {
     console.log(getVersionText());
     process.exit(0);
+  }
+
+  assertSupportedRuntimePlatform();
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.error('Kode needs an interactive TTY terminal. Run it directly in a terminal instead of piping stdin or stdout.');
+    process.exit(1);
   }
 
   const config = await loadConfig();

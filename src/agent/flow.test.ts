@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { Agent } from './loop';
 import SessionDB from '../db/sessions';
 
@@ -1005,6 +1005,81 @@ describe('Agent workspace flow', () => {
       expect(read.done).toBe(true);
       expect(read.content).toContain('Here is package.json.');
       expect(read.content).not.toContain('<tool_call>');
+    } finally {
+      vi.restoreAllMocks();
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('routes xml edit_file aliases into permission flow and completes the edit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-edit-transcript-'));
+    const lowkeyDir = join(root, 'Lowkey');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(lowkeyDir, { recursive: true });
+    await writeFile(
+      join(lowkeyDir, 'package.json'),
+      JSON.stringify(
+        {
+          devDependencies: {
+            electron: '^30.5.1',
+          },
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(lowkeyDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: lowkeyDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      vi.spyOn(agent as unknown as { callLLM: () => Promise<string | null> }, 'callLLM')
+        .mockResolvedValueOnce(`<tool_call>edit_file
+<arg_key>path</arg_key>
+<arg_value>${join(lowkeyDir, 'package.json').replace(/\\/g, '/')}</arg_value>
+<arg_key>old_string</arg_key>
+<arg_value>"electron": "^30.5.1"</arg_value>
+<arg_key>new_string</arg_key>
+<arg_value>"electron": "^26.2.1"</arg_value>
+</tool_call>`);
+
+      const response = await agent.run('yeah can you edit "electron": "^30.5.1" version to lower');
+
+      expect(response.done).toBe(false);
+      expect(response.content).not.toContain('<tool_call>');
+      expect(response.toolCalls?.[0].name).toBe('edit_file');
+      expect(response.toolCalls?.[0].args).toEqual({
+        path: join(lowkeyDir, 'package.json').replace(/\\/g, '/'),
+        old_string: '"electron": "^30.5.1"',
+        new_string: '"electron": "^26.2.1"',
+        target: '"electron": "^30.5.1"',
+        replacement: '"electron": "^26.2.1"',
+      });
+
+      agent.grantPermission('edit', true);
+      const execution = await agent.executeToolWithPermission(response.toolCalls![0]);
+      expect(execution.success).toBe(true);
+
+      const completion = await agent.continueAfterPermission();
+      expect(completion.done).toBe(true);
+      expect(completion.content).toContain('Updated');
+
+      const fileContent = await readFile(join(lowkeyDir, 'package.json'), 'utf-8');
+      expect(fileContent).toContain('"electron": "^26.2.1"');
     } finally {
       vi.restoreAllMocks();
       await db.close();
