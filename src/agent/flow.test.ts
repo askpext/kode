@@ -946,4 +946,69 @@ describe('Agent workspace flow', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('replays clone analyze and mixed read-file transcript without leaking tool markup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-read-transcript-'));
+    const homeDir = join(root, 'home', 'aditya');
+    const lowkeyDir = join(homeDir, 'Lowkey');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(join(lowkeyDir, 'src'), { recursive: true });
+    await writeFile(
+      join(lowkeyDir, 'package.json'),
+      JSON.stringify({ name: 'lowkey', version: '0.1.0' }),
+      'utf-8'
+    );
+    await writeFile(join(lowkeyDir, 'README.md'), '# Lowkey\n', 'utf-8');
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(homeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: homeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const clone = await agent.run('hey clone this repo https://github.com/askpext/Lowkey');
+      expect(clone.done).toBe(false);
+      (agent as any).lastPermissionResult = {
+        toolName: 'bash',
+        success: true,
+        result: 'Cloning into \'Lowkey\'...',
+      };
+      await agent.continueAfterPermission();
+
+      await agent.run('yeah go to lowkey dir');
+
+      const analysis = await agent.run('analyze the codebase');
+      expect(analysis.content).toContain('CODEBASE ANALYSIS');
+
+      vi.spyOn(agent as unknown as { callLLM: () => Promise<string | null> }, 'callLLM')
+        .mockResolvedValueOnce(`<tool_call>
+{
+  "name": "read_file",
+  "args": {
+    "path": "${join(lowkeyDir, 'package.json').replace(/\\/g, '/')}"
+  }
+}
+</tool_call>`)
+        .mockResolvedValueOnce('Here is package.json.');
+
+      const read = await agent.run('can you read the package json');
+      expect(read.done).toBe(true);
+      expect(read.content).toContain('Here is package.json.');
+      expect(read.content).not.toContain('<tool_call>');
+    } finally {
+      vi.restoreAllMocks();
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
