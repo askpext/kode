@@ -376,6 +376,52 @@ describe('Agent workspace flow', () => {
     }
   });
 
+  it('parses json-inside-tool-call blocks for read_file without leaking markup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-json-xml-read-'));
+    const kodeDir = join(root, 'Lowkey');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(kodeDir, { recursive: true });
+    await writeFile(join(kodeDir, 'package.json'), '{"name":"lowkey"}', 'utf-8');
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(kodeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: kodeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      vi.spyOn(agent as unknown as { callLLM: () => Promise<string | null> }, 'callLLM')
+        .mockResolvedValueOnce(`<tool_call>
+{
+  "name": "read_file",
+  "args": {
+    "path": "${join(kodeDir, 'package.json').replace(/\\/g, '/')}"
+  }
+}
+</tool_call>`)
+        .mockResolvedValueOnce('Here is the file content.');
+
+      const response = await agent.run('do that');
+
+      expect(response.done).toBe(true);
+      expect(response.content).toContain('Here is the file content.');
+      expect(response.content).not.toContain('<tool_call>');
+    } finally {
+      vi.restoreAllMocks();
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('reads an explicit file deterministically without using the model loop', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kode-agent-read-file-'));
     const kodeDir = join(root, 'kode');

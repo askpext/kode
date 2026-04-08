@@ -1106,6 +1106,27 @@ Respond professionally like a developer tool, not a chatbot.`;
     const xmlToolPattern = /<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/g;
     while ((match = xmlToolPattern.exec(content)) !== null) {
       const toolBlock = match[1].trimStart();
+
+      if (toolBlock.startsWith('{')) {
+        try {
+          const parsed = this.parseToolCallJSON(toolBlock);
+          if (parsed && this.validateToolCall(parsed)) {
+            const signature = `${parsed.name}:${JSON.stringify(parsed.args)}`;
+            if (!seenSignatures.has(signature)) {
+              seenSignatures.add(signature);
+              toolCalls.push({
+                id: `call_xml_json_${toolCalls.length}`,
+                name: parsed.name,
+                args: parsed.args,
+              });
+            }
+          }
+        } catch {
+          // Invalid JSON, skip
+        }
+        continue;
+      }
+
       const toolNameMatch = toolBlock.match(/^([a-zA-Z0-9_\-]+)/);
       if (toolNameMatch) {
         const toolName = toolNameMatch[1].trim();
@@ -1221,6 +1242,7 @@ Respond professionally like a developer tool, not a chatbot.`;
     return content
       .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
       .replace(/<tool_call>[\s\S]*$/g, '')
+      .replace(/<tool_call>\s*\{[\s\S]*?(?:<\/tool_call>|$)/g, '')
       .replace(/tool_call:\s*\{[\s\S]*?\}(?=\n|$)/g, '')
       .replace(/\*\*TOOL CALL:\*\*[\s\S]*?(?=\n{2,}|\Z)/g, '')
       .trim();
