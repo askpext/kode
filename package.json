@@ -1,6 +1,6 @@
 {
   "name": "kode-ai",
-  "version": "1.2.17",
+  "version": "1.2.18",
   "description": "Kode - AI coding agent for the terminal powered by Sarvam AI",
   "type": "module",
   "main": "./dist/cli.js",
