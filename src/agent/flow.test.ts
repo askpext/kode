@@ -774,6 +774,63 @@ describe('Agent workspace flow', () => {
     }
   });
 
+  it('replays the clone then visit then analyze transcript deterministically', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kode-agent-transcript-'));
+    const homeDir = join(root, 'home', 'aditya');
+    const lowkeyDir = join(homeDir, 'Lowkey');
+    const dbPath = join(root, 'sessions.db');
+
+    await mkdir(join(lowkeyDir, 'src'), { recursive: true });
+    await writeFile(
+      join(lowkeyDir, 'package.json'),
+      JSON.stringify({ name: 'lowkey', version: '0.0.1', bin: { lowkey: './dist/cli.js' } }),
+      'utf-8'
+    );
+    await writeFile(join(lowkeyDir, 'README.md'), '# Lowkey\n', 'utf-8');
+
+    const db = new SessionDB(dbPath);
+
+    try {
+      const session = await db.createSession(homeDir);
+      const agent = new Agent({
+        sessionId: session.id,
+        cwd: homeDir,
+        db,
+        apiKey: 'test-key',
+        baseUrl: 'https://example.com',
+        model: 'test-model',
+      });
+
+      await agent.initialize();
+
+      const clone = await agent.run('hey clone the repo https://github.com/askpext/Lowkey');
+      expect(clone.done).toBe(false);
+
+      (agent as any).lastPermissionResult = {
+        toolName: 'bash',
+        success: true,
+        result: 'Cloning into \'Lowkey\'...',
+      };
+      await agent.continueAfterPermission();
+
+      const visit = await agent.run('good visit that dir');
+      expect(visit.done).toBe(true);
+      expect(visit.content).toContain(lowkeyDir);
+
+      const goTo = await agent.run('go to that dir');
+      expect(goTo.done).toBe(true);
+      expect(goTo.content).toContain(lowkeyDir);
+
+      const analysis = await agent.run('analyze the Lowkey dir');
+      expect(analysis.done).toBe(true);
+      expect(analysis.content).toContain('CODEBASE ANALYSIS');
+      expect(analysis.content).toContain(`Workspace: ${lowkeyDir}`);
+    } finally {
+      await db.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps ambiguous deterministic file requests out of the llm loop', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kode-agent-file-fallback-'));
     const kodeDir = join(root, 'kode');

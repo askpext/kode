@@ -1556,7 +1556,7 @@ Respond professionally like a developer tool, not a chatbot.`;
   }
 
   private extractDirectDirectoryReference(input: string): string | null {
-    const trimmed = input.trim();
+    const trimmed = input.trim().replace(/^(?:good|okay|ok|please|bro+)\s+/i, '');
 
     if (/^(that|this)\s+(dir|directory|folder|repo|repository)$/i.test(trimmed)) {
       return this.lastReferencedDirectory;
