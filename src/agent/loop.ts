@@ -1415,7 +1415,11 @@ Respond professionally like a developer tool, not a chatbot.`;
       successMessage: task.background
         ? `${task.successLabel} started with \`${command}\``
         : `${task.successLabel} finished with \`${command}\``,
-      failureMessage: `I couldn't ${task.label} with \`${command}\`.`,
+      failureMessage: task.type === 'clone'
+        ? `I couldn't clone the repository with \`${command}\`.`
+        : task.type === 'delete'
+          ? `I couldn't delete with \`${command}\`.`
+          : `I couldn't run ${task.label} with \`${command}\`.`,
       backgroundCommand: task.background ? command : undefined,
     };
 

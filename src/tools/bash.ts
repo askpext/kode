@@ -1,4 +1,4 @@
-import { execa } from 'execa';
+import { execa, execaCommand } from 'execa';
 import { isNativeWindowsEnvironment } from '../utils/platform.js';
 
 export interface BashArgs {
@@ -28,7 +28,7 @@ export async function bashTool(args: BashArgs, cwd: string, timeout: number = DE
   }
 
   try {
-    const child = execa(args.command, {
+    const child = execaCommand(args.command, {
       shell: '/bin/bash',
       cwd: commandCwd,
       timeout,
@@ -121,7 +121,7 @@ export function formatBashResult(result: BashResult): string {
 }
 
 import { v4 as uuidv4 } from 'uuid';
-import { ExecaChildProcess } from 'execa';
+import { execaCommand, ExecaChildProcess } from 'execa';
 
 export interface ProcessInfo {
   id: string;
@@ -150,7 +150,7 @@ export async function bashBackgroundTool(args: BashBackgroundArgs, cwd: string):
 
   try {
     const id = uuidv4();
-    const child = execa(args.command, {
+    const child = execaCommand(args.command, {
       shell: '/bin/bash',
       cwd: args.cwd || cwd,
       buffer: false,
