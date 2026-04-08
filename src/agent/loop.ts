@@ -1421,7 +1421,9 @@ Respond professionally like a developer tool, not a chatbot.`;
 
     const response = task.background
       ? `I can start ${task.label} with \`${command}\` as a tracked background process once you approve it.`
-      : `I can run ${task.label} with \`${command}\` once you approve it.`;
+      : task.type === 'delete'
+        ? `I can ${task.label} with \`${command}\` once you approve it.`
+        : `I can run ${task.label} with \`${command}\` once you approve it.`;
 
     this.contextManager.addMessage({ role: 'assistant', content: response, toolCalls: [toolCall] });
     return {
@@ -1569,23 +1571,293 @@ Respond professionally like a developer tool, not a chatbot.`;
     return targetPath;
   }
 
-  private resolveTaskCommand(task: { type: 'test' | 'build' | 'dev' | 'clone' }): string | null {
+  private resolveTaskCommand(task: { type: string }): string | null {
+    const lastMessage = this.contextManager.getMessagesForApi().pop();
+    const content = lastMessage?.role === 'user' ? lastMessage.content : '';
+
+    // === Original tasks ===
     if (task.type === 'clone') {
-      // Extract URL from the last user message for clone tasks
-      const lastMessage = this.contextManager.getMessagesForApi().pop();
-      if (lastMessage?.role === 'user') {
-        const urlMatch = lastMessage.content.match(/(https?:\/\/[^\s]+)/);
-        if (urlMatch) {
-          const url = urlMatch[1];
-          // Extract repo name from URL for target directory
-          const repoNameMatch = url.match(/\/([^/]+?)(?:\.git)?$/);
-          const targetDir = repoNameMatch ? repoNameMatch[1] : 'repo';
-          return `git clone ${url} ${targetDir}`;
-        }
+      const urlMatch = content.match(/(https?:\/\/[^\s]+)/);
+      if (urlMatch) {
+        const url = urlMatch[1];
+        const repoNameMatch = url.match(/\/([^/]+?)(?:\.git)?$/);
+        const targetDir = repoNameMatch ? repoNameMatch[1] : 'repo';
+        return `git clone ${url} ${targetDir}`;
       }
       return null;
     }
 
+    if (task.type === 'delete') {
+      const pathMatch = content.match(/(?:delete|remove|rm|rmdir|unlink)\s+(.+?)(?:\s*(?:directory|dir|folder|file|this|it))?\.?\s*$/i);
+      if (pathMatch) {
+        const targetPath = pathMatch[1].trim();
+        return `rm -rf "${targetPath}"`;
+      }
+      if (/this\s+(dir|directory|folder)|current\s+dir/i.test(content)) {
+        return `rm -rf .`;
+      }
+      return null;
+    }
+
+    // === Git operations ===
+    if (task.type === 'git_status') {
+      return 'git status';
+    }
+
+    if (task.type === 'git_commit') {
+      const msgMatch = content.match(/(?:commit|save)\s*(?:changes?\s*)?(?:as|with)\s+(?:message\s+)?"(.+?)"/i);
+      if (msgMatch) {
+        return `git add -A && git commit -m "${msgMatch[1]}"`;
+      }
+      return 'git add -A && git commit -m "update"';
+    }
+
+    if (task.type === 'git_push') {
+      const branchMatch = content.match(/push\s+(?:to\s+)?(\S+)/i);
+      if (branchMatch && !['changes', 'to', 'remote', 'origin', 'up'].includes(branchMatch[1].toLowerCase())) {
+        return `git push ${branchMatch[1]}`;
+      }
+      return 'git push';
+    }
+
+    if (task.type === 'git_pull') {
+      const branchMatch = content.match(/pull\s+(?:from\s+)?(\S+)/i);
+      if (branchMatch && !['latest', 'updates', 'changes'].includes(branchMatch[1].toLowerCase())) {
+        return `git pull ${branchMatch[1]}`;
+      }
+      return 'git pull';
+    }
+
+    if (task.type === 'git_checkout') {
+      const branchMatch = content.match(/(?:branch|to)\s+(\S+)/i);
+      if (branchMatch) {
+        const branch = branchMatch[1];
+        // Check if creating new branch
+        if (/create|new/i.test(content)) {
+          return `git checkout -b ${branch}`;
+        }
+        return `git checkout ${branch}`;
+      }
+      return null;
+    }
+
+    if (task.type === 'git_diff') {
+      const fileMatch = content.match(/diff\s+(?:in\s+|for\s+)?(\S+)/i);
+      if (fileMatch) {
+        return `git diff ${fileMatch[1]}`;
+      }
+      if (/staged|cached/i.test(content)) {
+        return 'git diff --staged';
+      }
+      return 'git diff';
+    }
+
+    if (task.type === 'git_log') {
+      const countMatch = content.match(/(\d+)\s*(commits?|recent)?/i);
+      const count = countMatch ? countMatch[1] : '10';
+      const fileMatch = content.match(/in\s+(\S+)/i);
+      if (fileMatch) {
+        return `git log --oneline -${count} -- ${fileMatch[1]}`;
+      }
+      return `git log --oneline -${count}`;
+    }
+
+    if (task.type === 'git_stash') {
+      if (/pop/i.test(content)) {
+        return 'git stash pop';
+      }
+      if (/list/i.test(content)) {
+        return 'git stash list';
+      }
+      return 'git stash';
+    }
+
+    if (task.type === 'git_branch') {
+      if (/create|new/i.test(content)) {
+        const nameMatch = content.match(/branch\s+(\S+)/i);
+        if (nameMatch) return `git branch ${nameMatch[1]}`;
+      }
+      if (/delete|remove/i.test(content)) {
+        const nameMatch = content.match(/branch\s+(\S+)/i);
+        if (nameMatch) return `git branch -d ${nameMatch[1]}`;
+      }
+      return 'git branch';
+    }
+
+    // === File operations ===
+    if (task.type === 'create_file') {
+      const fileMatch = content.match(/(?:create|make|new|touch)\s+(?:a\s+)?file\s+(?:called\s+|named\s+)?(\S+)/i)
+        || content.match(/touch\s+(\S+)/);
+      if (fileMatch) {
+        return `touch "${fileMatch[1]}"`;
+      }
+      return null;
+    }
+
+    if (task.type === 'move_file') {
+      const match = content.match(/(?:move|rename|mv)\s+(\S+)\s+(?:to\s+)?(\S+)/i);
+      if (match) {
+        return `mv "${match[1]}" "${match[2]}"`;
+      }
+      return null;
+    }
+
+    if (task.type === 'copy_file') {
+      const match = content.match(/(?:copy|duplicate|cp)\s+(\S+)\s+(?:to\s+)?(\S+)/i);
+      if (match) {
+        return `cp -r "${match[1]}" "${match[2]}"`;
+      }
+      return null;
+    }
+
+    // === Package management ===
+    if (task.type === 'install_pkg') {
+      const npmMatch = content.match(/npm\s+install\s+(\S+)/);
+      if (npmMatch) return `npm install ${npmMatch[1]}`;
+      const pipMatch = content.match(/pip\s+install\s+(\S+)/);
+      if (pipMatch) return `pip install ${pipMatch[1]}`;
+      const yarnMatch = content.match(/yarn\s+add\s+(\S+)/);
+      if (yarnMatch) return `yarn add ${yarnMatch[1]}`;
+      return null;
+    }
+
+    if (task.type === 'uninstall_pkg') {
+      const npmMatch = content.match(/npm\s+uninstall\s+(\S+)/);
+      if (npmMatch) return `npm uninstall ${npmMatch[1]}`;
+      const pipMatch = content.match(/pip\s+uninstall\s+-y\s+(\S+)/) || content.match(/pip\s+uninstall\s+(\S+)/);
+      if (pipMatch) return `pip uninstall -y ${pipMatch[1]}`;
+      return null;
+    }
+
+    if (task.type === 'install_deps') {
+      if (/requirements\.txt/i.test(content)) {
+        return 'pip install -r requirements.txt';
+      }
+      if (/npm\s*ci/i.test(content)) {
+        return 'npm ci';
+      }
+      if (existsSync(resolve(this.cwd, 'yarn.lock'))) {
+        return 'yarn install';
+      }
+      if (existsSync(resolve(this.cwd, 'package-lock.json')) || existsSync(resolve(this.cwd, 'package.json'))) {
+        return 'npm install';
+      }
+      if (existsSync(resolve(this.cwd, 'Pipfile'))) {
+        return 'pipenv install';
+      }
+      return 'npm install';
+    }
+
+    // === Process management ===
+    if (task.type === 'kill_process') {
+      const portMatch = content.match(/port\s+(\d+)/i);
+      if (portMatch) {
+        return `lsof -ti:${portMatch[1]} | xargs kill -9`;
+      }
+      const pidMatch = content.match(/kill\s+(-?\d+)/);
+      if (pidMatch) return `kill ${pidMatch[1]}`;
+      const procMatch = content.match(/kill.*(?:process|called)\s+(\S+)/i);
+      if (procMatch) return `pkill -f ${procMatch[1]}`;
+      return null;
+    }
+
+    if (task.type === 'list_processes') {
+      const portMatch = content.match(/port\s+(\d+)/i);
+      if (portMatch) {
+        return `lsof -i :${portMatch[1]}`;
+      }
+      return 'ps aux';
+    }
+
+    // === Network/Archives ===
+    if (task.type === 'download') {
+      const urlMatch = content.match(/(https?:\/\/[^\s]+)/);
+      if (urlMatch) {
+        const url = urlMatch[1];
+        const outputMatch = content.match(/(?:as|to|called)\s+(\S+)/i);
+        const output = outputMatch ? outputMatch[1] : url.split('/').pop() || 'download';
+        return `curl -o "${output}" "${url}"`;
+      }
+      return null;
+    }
+
+    if (task.type === 'extract') {
+      const fileMatch = content.match(/(?:unzip|extract|unpack)\s+(\S+)/i)
+        || content.match(/(tar\s+-\w+\s+\S+)/i);
+      if (fileMatch) {
+        return fileMatch[1] || `tar -xzf ${fileMatch[2] || fileMatch[1]}`;
+      }
+      return null;
+    }
+
+    if (task.type === 'compress') {
+      const match = content.match(/(?:zip|compress|archive)\s+(\S+)/i);
+      if (match) {
+        return `tar -czf ${match[1]}.tar.gz ${match[1]}`;
+      }
+      return null;
+    }
+
+    // === System/Env ===
+    if (task.type === 'chmod') {
+      if (/executable|\+x/i.test(content)) {
+        const fileMatch = content.match(/\s+(\S+\.?\w*)$/);
+        if (fileMatch) return `chmod +x "${fileMatch[1]}"`;
+      }
+      const modeMatch = content.match(/chmod\s+(\d+)/);
+      if (modeMatch) {
+        const fileMatch = content.match(/\s+(\S+)$/);
+        if (fileMatch) return `chmod ${modeMatch[1]} "${fileMatch[1]}"`;
+      }
+      return null;
+    }
+
+    if (task.type === 'disk_usage') {
+      if (/current|here|this/i.test(content)) {
+        return `du -sh .`;
+      }
+      const pathMatch = content.match(/in\s+(\S+)/i);
+      if (pathMatch) return `du -sh ${pathMatch[1]}`;
+      return 'df -h';
+    }
+
+    if (task.type === 'env_var') {
+      const exportMatch = content.match(/export\s+(\w+=.+)/);
+      if (exportMatch) return `export ${exportMatch[1]}`;
+      return null;
+    }
+
+    // === Docker ===
+    if (task.type === 'docker_run') {
+      const imageMatch = content.match(/image\s+(\S+)/i) || content.match(/run\s+(\S+)/i);
+      if (imageMatch) return `docker run ${imageMatch[1]}`;
+      return null;
+    }
+
+    if (task.type === 'docker_stop') {
+      const containerMatch = content.match(/(?:container|stop|remove)\s+(\S+)/i);
+      if (containerMatch) return `docker stop ${containerMatch[1]}`;
+      return null;
+    }
+
+    if (task.type === 'docker_build') {
+      const tagMatch = content.match(/tag\s+(\S+)/i) || content.match(/name[dt]?\s+(\S+)/i);
+      if (tagMatch) return `docker build -t ${tagMatch[1]} .`;
+      return 'docker build -t app .';
+    }
+
+    if (task.type === 'docker_ps') {
+      if (/logs/i.test(content)) {
+        const containerMatch = content.match(/(\S+)/i);
+        if (containerMatch) return `docker logs ${containerMatch[1]}`;
+      }
+      if (/images/i.test(content)) {
+        return 'docker images';
+      }
+      return 'docker ps';
+    }
+
+    // === Fallback: check package.json scripts ===
     const scripts = this.readPackageScripts();
     if (!scripts) {
       return null;
