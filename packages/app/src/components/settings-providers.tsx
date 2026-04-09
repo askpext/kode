@@ -9,8 +9,6 @@ import { useLanguage } from "@/context/language"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { DialogConnectProvider } from "./dialog-connect-provider"
-import { DialogSelectProvider } from "./dialog-select-provider"
-import { DialogCustomProvider } from "./dialog-custom-provider"
 import { SettingsList } from "./settings-list"
 
 type ProviderSource = "env" | "api" | "config" | "custom"
@@ -207,43 +205,7 @@ export const SettingsProviders: Component = () => {
                 </div>
               )}
             </For>
-
-            <div
-              class="flex items-center justify-between gap-4 min-h-16 border-b border-border-weak-base last:border-none flex-wrap py-3"
-              data-component="custom-provider-section"
-            >
-              <div class="flex flex-col min-w-0">
-                <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <ProviderIcon id="synthetic" class="size-5 shrink-0 icon-strong-base" />
-                  <span class="text-14-medium text-text-strong">{language.t("provider.custom.title")}</span>
-                  <Tag>{language.t("settings.providers.tag.custom")}</Tag>
-                </div>
-                <span class="text-12-regular text-text-weak pl-8">
-                  {language.t("settings.providers.custom.description")}
-                </span>
-              </div>
-              <Button
-                size="large"
-                variant="secondary"
-                icon="plus-small"
-                onClick={() => {
-                  dialog.show(() => <DialogCustomProvider back="close" />)
-                }}
-              >
-                {language.t("common.connect")}
-              </Button>
-            </div>
           </SettingsList>
-
-          <Button
-            variant="ghost"
-            class="px-0 py-0 mt-5 text-14-medium text-text-interactive-base text-left justify-start hover:bg-transparent active:bg-transparent"
-            onClick={() => {
-              dialog.show(() => <DialogSelectProvider />)
-            }}
-          >
-            {language.t("dialog.provider.viewAll")}
-          </Button>
         </div>
       </div>
     </div>

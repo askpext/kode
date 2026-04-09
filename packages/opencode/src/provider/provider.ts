@@ -421,8 +421,8 @@ export namespace Provider {
           autoload: false,
           options: {
             headers: {
-              "HTTP-Referer": "https://opencode.ai/",
-              "X-Title": "opencode",
+              "HTTP-Referer": "https://github.com/askpext/kode",
+              "X-Title": "kode",
             },
           },
         }),
@@ -431,8 +431,8 @@ export namespace Provider {
           autoload: false,
           options: {
             headers: {
-              "http-referer": "https://opencode.ai/",
-              "x-title": "opencode",
+              "http-referer": "https://github.com/askpext/kode",
+              "x-title": "kode",
             },
           },
         }),
@@ -530,8 +530,8 @@ export namespace Provider {
           autoload: false,
           options: {
             headers: {
-              "HTTP-Referer": "https://opencode.ai/",
-              "X-Title": "opencode",
+              "HTTP-Referer": "https://github.com/askpext/kode",
+              "X-Title": "kode",
             },
           },
         }),
@@ -808,8 +808,8 @@ export namespace Provider {
           autoload: false,
           options: {
             headers: {
-              "HTTP-Referer": "https://opencode.ai/",
-              "X-Title": "opencode",
+              "HTTP-Referer": "https://github.com/askpext/kode",
+              "X-Title": "kode",
             },
           },
         }),
