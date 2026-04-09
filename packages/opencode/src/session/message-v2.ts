@@ -715,7 +715,11 @@ export namespace MessageV2 {
           if (part.type === "tool") {
             toolNames.add(part.tool)
             if (part.state.status === "completed") {
-              const outputText = part.state.time.compacted ? "[Old tool result content cleared]" : part.state.output
+              const outputText = (() => {
+                if (part.state.time.compacted) return "[Old tool result content cleared]"
+                if (part.state.output !== "") return part.state.output
+                return "[Tool completed with no text output]"
+              })()
               const attachments = part.state.time.compacted || options?.stripMedia ? [] : (part.state.attachments ?? [])
 
               // For providers that don't support media in tool results, extract media files
