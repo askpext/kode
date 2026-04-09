@@ -16,6 +16,7 @@ export const DialogSelectProvider: Component = () => {
   const popularGroup = () => language.t("dialog.provider.group.popular")
   const otherGroup = () => language.t("dialog.provider.group.other")
   const note = (id: string) => {
+    if (id === "sarvam") return language.t("dialog.provider.openrouter.note")
     if (id === "anthropic") return language.t("dialog.provider.anthropic.note")
     if (id === "openai") return language.t("dialog.provider.openai.note")
     if (id.startsWith("github-copilot")) return language.t("dialog.provider.copilot.note")

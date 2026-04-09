@@ -107,7 +107,7 @@ export const dict = {
   "dialog.provider.copilot.note": "AI models for coding assistance via GitHub Copilot",
   "dialog.provider.openai.note": "GPT models for fast, capable general AI tasks",
   "dialog.provider.google.note": "Gemini models for fast, structured responses",
-  "dialog.provider.openrouter.note": "Use one OpenRouter key to access the models Kode supports",
+  "dialog.provider.openrouter.note": "Use one Sarvam key to access the models Kode supports",
   "dialog.provider.vercel.note": "Unified access to AI models with smart routing",
 
   "dialog.model.select.title": "Select model",
@@ -117,8 +117,8 @@ export const dict = {
   "dialog.model.manage.description": "Customize which models appear in the model selector.",
   "dialog.model.manage.provider.toggle": "Toggle all {{provider}} models",
 
-  "dialog.model.unpaid.freeModels.title": "Recommended models for Kode",
-  "dialog.model.unpaid.addMore.title": "Add another model from OpenRouter",
+  "dialog.model.unpaid.freeModels.title": "Recommended Sarvam models for Kode",
+  "dialog.model.unpaid.addMore.title": "Add another Sarvam model",
 
   "dialog.provider.viewAll": "Show more providers",
 
@@ -134,11 +134,11 @@ export const dict = {
   "provider.connect.apiKey.label": "{{provider}} API key",
   "provider.connect.apiKey.placeholder": "API key",
   "provider.connect.apiKey.required": "API key is required",
-  "provider.connect.opencodeZen.line1": "Kode is set up to work best with a small curated set of strong models.",
+  "provider.connect.opencodeZen.line1": "Kode is set up to work best with a small curated set of Sarvam models.",
   "provider.connect.opencodeZen.line2":
-    "Use one OpenRouter key to access Claude, GPT, and Gemini models without extra provider setup.",
+    "Use one Sarvam key to access the recommended coding models without extra provider setup.",
   "provider.connect.opencodeZen.visit.prefix": "Visit ",
-  "provider.connect.opencodeZen.visit.link": "openrouter.ai",
+  "provider.connect.opencodeZen.visit.link": "dashboard.sarvam.ai",
   "provider.connect.opencodeZen.visit.suffix": " to collect your API key.",
   "provider.connect.oauth.code.visit.prefix": "Visit ",
   "provider.connect.oauth.code.visit.link": "this link",
@@ -675,8 +675,8 @@ export const dict = {
   "sidebar.workspaces.enable": "Enable workspaces",
   "sidebar.workspaces.disable": "Disable workspaces",
   "sidebar.gettingStarted.title": "Getting started",
-  "sidebar.gettingStarted.line1": "Kode is trimmed down to one provider so setup stays simple.",
-  "sidebar.gettingStarted.line2": "Connect OpenRouter once, then pick from the recommended coding models.",
+  "sidebar.gettingStarted.line1": "Kode is trimmed down to Sarvam-first so setup stays simple.",
+  "sidebar.gettingStarted.line2": "Connect Sarvam once, then pick from the recommended coding models.",
   "sidebar.project.recentSessions": "Recent sessions",
   "sidebar.project.viewAllSessions": "View all sessions",
   "sidebar.project.clearNotifications": "Clear notifications",
